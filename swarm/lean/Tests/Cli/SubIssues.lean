@@ -135,7 +135,7 @@ def test_sub_migration_v2 (t : T) : IO Unit := do
   has (← t.sw "comms" ["board"]).stdout "#7"
   eq ((← t.q1 "select count(*) n from pragma_table_info('task') where name='parent'").f "n") 1
   eq (← t.q1 "select id, title, state, parent from task where id=7") (json% {"id": 7, "title": "old", "state": "ready"})
-  eq ((← t.q1 "select user_version from pragma_user_version").f "user_version") 3
+  eq ((← t.q1 "select user_version from pragma_user_version").f "user_version") 4
   eq ((← t.q1 "select count(*) n from swarm where name='t'").f "n") 1
   eq ((← t.q1 "select count(*) n from sqlite_master where name='task_parent'").f "n") 1
   -- and a parent can be set on the migrated row

@@ -59,27 +59,27 @@ def col (v : Array Val) (i : Nat) : Val := v.getD i .null
 
 /-- A task's state (task.state): Linear's states, each in a fixed category (`Status.category`). -/
 inductive Status
-  | backlog | ready | inProgress | needsInput | inReview | completed | cancelled | duplicate
+  | backlog | proposed | ready | inProgress | needsInput | inReview | completed | cancelled | duplicate
   deriving DecidableEq, Repr, Inhabited
 
 /-- The state's text in the db and in `--json`. -/
 def Status.text : Status → String
-  | .backlog => "backlog" | .ready => "ready" | .inProgress => "in_progress" | .needsInput => "needs_input"
+  | .backlog => "backlog" | .proposed => "proposed" | .ready => "ready" | .inProgress => "in_progress" | .needsInput => "needs_input"
   | .inReview => "in_review" | .completed => "completed" | .cancelled => "cancelled" | .duplicate => "duplicate"
 
 /-- The state's name as the board shows it. -/
 def Status.name : Status → String
-  | .backlog => "Backlog" | .ready => "Ready" | .inProgress => "In Progress" | .needsInput => "Needs Input"
+  | .backlog => "Backlog" | .proposed => "Proposed" | .ready => "Ready" | .inProgress => "In Progress" | .needsInput => "Needs Input"
   | .inReview => "In Review" | .completed => "Completed" | .cancelled => "Cancelled" | .duplicate => "Duplicate"
 
 /-- The state a db text names. -/
 def Status.ofText : String → Except String Status
-  | "backlog" => .ok .backlog | "ready" => .ok .ready | "in_progress" => .ok .inProgress
+  | "backlog" => .ok .backlog | "proposed" => .ok .proposed | "ready" => .ok .ready | "in_progress" => .ok .inProgress
   | "needs_input" => .ok .needsInput | "in_review" => .ok .inReview | "completed" => .ok .completed
   | "cancelled" => .ok .cancelled | "duplicate" => .ok .duplicate | s => .error s!"unknown task state '{s}'"
 
 /-- Every state, in the board's order. -/
-def Status.all : List Status := [.backlog, .ready, .inProgress, .needsInput, .inReview, .completed, .cancelled, .duplicate]
+def Status.all : List Status := [.backlog, .proposed, .ready, .inProgress, .needsInput, .inReview, .completed, .cancelled, .duplicate]
 
 /-- A state's category: fixed, as Linear's. -/
 inductive Category
@@ -104,13 +104,16 @@ def Category.ofText : String → Option Category
 /-- The category state `s` sits in. -/
 def Status.category : Status → Category
   | .backlog => .backlog
-  | .ready => .unstarted
+  | .proposed | .ready => .unstarted
   | .inProgress | .needsInput | .inReview => .started
   | .completed => .completed
   | .cancelled | .duplicate => .cancelled
 
 /-- Closed: completed or cancelled (a duplicate too). -/
 def Status.closed (s : Status) : Bool := s.category == .completed || s.category == .cancelled
+
+/-- Not started and not closed: Backlog, Proposed or Ready, the tasks that hold a place and no one has claimed. -/
+def Status.preStart (s : Status) : Bool := s == .backlog || s == .proposed || s == .ready
 
 /-- A task's priority: Linear's five levels, stored as Linear numbers them (0 none, 1 urgent … 4 low). It labels and
 filters; it never orders Ready. -/
@@ -211,6 +214,7 @@ duplicates. A completed task keeps the assignee, question and hand-over it had; 
 question and hand-over (`drop` and the green run's close take a task as it is). -/
 inductive TaskState
   | backlog (assignee : Option String)
+  | proposed (assignee : Option String)
   | ready (assignee : Option String)
   | inProgress (assignee : String) (lease : Int)
   | needsInput (assignee : String) (lease : Int) (question : String)
@@ -224,7 +228,7 @@ namespace TaskState
 
 /-- The state's name. -/
 def status : TaskState → Status
-  | .backlog .. => .backlog | .ready .. => .ready | .inProgress .. => .inProgress | .needsInput .. => .needsInput
+  | .backlog .. => .backlog | .proposed .. => .proposed | .ready .. => .ready | .inProgress .. => .inProgress | .needsInput .. => .needsInput
   | .inReview .. => .inReview | .completed .. => .completed | .cancelled .. => .cancelled | .duplicate .. => .duplicate
 
 /-- The state's category: the one function code asks (never a match on every state). -/
@@ -232,7 +236,7 @@ def category (s : TaskState) : Category := s.status.category
 
 /-- The assignee (column owner): a reserved Backlog or Ready task's, a started task's, who completed it. -/
 def assignee : TaskState → Option String
-  | .backlog a | .ready a => a
+  | .backlog a | .proposed a | .ready a => a
   | .inProgress a _ | .needsInput a _ _ | .inReview a _ => some a
   | .completed a _ _ => a
   | _ => none
@@ -304,7 +308,7 @@ def handOf : Option String × Option String × Option Int → Option (Option Lan
 /-- The columns a state of status `s` must have set, and those it may: owner, lease_until, question, land_sha,
 landing_at, lander, dup_of. -/
 def colsOf : Status → List String × List String
-  | .backlog | .ready => ([], ["owner"])
+  | .backlog | .proposed | .ready => ([], ["owner"])
   | .inProgress => (["owner", "lease_until"], [])
   | .needsInput => (["owner", "lease_until", "question"], [])
   | .inReview => (["owner", "land_sha", "landing_at"], ["lander"])
@@ -329,6 +333,7 @@ def ofCols (s : Status) (owner : Option String) (lease : Option Int) (question :
     (sha lander : Option String) (at_ : Option Int) (dup : Option Nat) : Except String TaskState :=
   match s, owner, lease, question, handOf (sha, lander, at_), dup with
   | .backlog, a, none, none, some none, none => .ok (.backlog a)
+  | .proposed, a, none, none, some none, none => .ok (.proposed a)
   | .ready, a, none, none, some none, none => .ok (.ready a)
   | .inProgress, some o, some l, none, some none, none => .ok (.inProgress o l)
   | .needsInput, some o, some l, some q, some none, none => .ok (.needsInput o l q)
@@ -356,6 +361,7 @@ theorem ofCols_self (t : TaskState) :
       t.dupOf = .ok t := by
   cases t with
   | backlog => rfl
+  | proposed => rfl
   | ready => rfl
   | inProgress => rfl
   | needsInput => rfl

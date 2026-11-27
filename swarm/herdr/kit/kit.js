@@ -105,12 +105,12 @@ export function agentGlyph(t, status, size = 10) {
     default: return box.rounded(size).border(1.5).border_color(c.idle);
   }
 }
-// Tasks (12 px), Linear's circle set: Backlog a faint dashed ring, Ready an empty ring, In Progress a ring with its right half
+// Tasks (12 px), Linear's circle set: Backlog a faint dashed ring, Proposed a dashed ring round a dot (waiting for triage), Ready an empty ring, In Progress a ring with its right half
 // filled, Needs Input a red ring round a square, In Review a green ring three quarters full, Completed a blue disc with a
 // check, Cancelled a grey disc with a cross, Duplicate a grey disc with an equals sign. wait is the dashed ring of a Ready
-// task's dependency mark. `state` is the glyph's own word (back, ready, wait, prog, block, land, done, cancel, dup);
+// task's dependency mark. `state` is the glyph's own word (back, prop, ready, wait, prog, block, land, done, cancel, dup);
 // glyphOf maps a task state to it.
-export const glyphOf = (state) => ({ backlog: "back", ready: "ready", in_progress: "prog", needs_input: "block", in_review: "land", completed: "done",
+export const glyphOf = (state) => ({ backlog: "back", proposed: "prop", ready: "ready", in_progress: "prog", needs_input: "block", in_review: "land", completed: "done",
   cancelled: "cancel", duplicate: "dup" })[state] ?? "ready";
 export function taskGlyph(t, state, size = 12, m = null, key = null) {
   const c = colors(t), col = { prog: c.working, block: c.asks, land: c.done, done: t.ansi4, cancel: t.dim, dup: t.dim }[state] ?? t.muted;
@@ -121,6 +121,7 @@ export function taskGlyph(t, state, size = 12, m = null, key = null) {
   const disc = (ch) => h_flex().flex_none().rounded(99).bg(col).items_center().justify_center()
     .child(div().text_size(Math.max(7, size * 0.72)).font_semibold().text_color(c.ink).child(ch));
   const g = state === "back" ? ring.border_dashed().opacity(0.55)
+    : state === "prop" ? ring.border_dashed().child(part().top("34%").bottom("34%").left("34%").right("34%").rounded(99))
     : state === "wait" ? ring.border_dashed().opacity(0.8)
     : state === "prog" ? ring.child(half)
     : state === "block" ? ring.child(part().top("32%").bottom("32%").left("32%").right("32%").rounded(1))
@@ -141,7 +142,7 @@ export const countBadge = (t, n) => h_flex().h(18).min_w(18).px(6).flex_none().i
   .font_family(MONO).text_size(TYPE.meta).text_color(t.foreground).child(String(n));
 // A state bar: `segs` [[state, n]] (a task state word) as segments sharing `w` px, Completed first; an empty bar is its track.
 export function stateBar(t, segs, w = 96) {
-  const c = colors(t), col = { completed: t.ansi4, in_review: c.done, in_progress: c.working, needs_input: c.asks, ready: alpha(t.foreground, 0.5), backlog: alpha(t.foreground, 0.2) };
+  const c = colors(t), col = { completed: t.ansi4, in_review: c.done, in_progress: c.working, needs_input: c.asks, ready: alpha(t.foreground, 0.5), proposed: alpha(t.foreground, 0.3), backlog: alpha(t.foreground, 0.2) };
   const bar = h_flex().w(w).h(4).flex_none().gap(1).rounded(2).overflow_hidden().bg(alpha(t.foreground, 0.08));
   const live = segs.filter(([, n]) => n > 0), total = live.reduce((a, [, n]) => a + n, 0), room = w - Math.max(0, live.length - 1);
   return bar.children(live.map(([s, n]) => div().h_full().flex_none().w(Math.max(2, Math.round((n / total) * room))).bg(col[s] ?? t.dim)));
@@ -169,7 +170,7 @@ export const checkbox = (t, on, some = false) => h_flex().size(14).flex_none().i
 
 // ---- table cells --------------------------------------------------------------------------------------------------
 // A task event's change as inline cells (tree.js evCells): "→ ◌ Backlog ▢ note", "Queue 4 → 1", "Low → Medium", "→ Duplicate #1810".
-export const STATE_WORD = { backlog: "Backlog", ready: "Ready", in_progress: "In Progress", needs_input: "Needs Input", in_review: "In Review",
+export const STATE_WORD = { backlog: "Backlog", proposed: "Proposed", ready: "Ready", in_progress: "In Progress", needs_input: "Needs Input", in_review: "In Review",
   completed: "Completed", cancelled: "Cancelled", duplicate: "Duplicate" };
 const dimText = (t, s) => div().flex_none().text_color(t.dim).child(s);
 export const noteChip = (t, text) => h_flex().flex_none().max_w(280).gap(4).items_center().text_size(TYPE.meta).text_color(t.dim)

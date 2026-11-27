@@ -47,6 +47,9 @@ structure Opts where
   hc : Option String := none
   cwd : Option String := none
   env : List (String × Option String) := []
+  /-- a `task add` by an ordinary agent files a Proposed task; by default the fixture then makes it Ready in the db (the
+  place it was filed at, the end, kept), so a test that adds and then claims works on a Ready task -/
+  proposes : Bool := false
 
 /-- The fixture. -/
 structure T where
@@ -190,41 +193,6 @@ def git (t : T) (cwd : Option String) (args : List String) : IO String := do
   if r.code ≠ 0 then fail s!"git {" ".intercalate args}: {r.stderr}"
   return r.stdout
 
-/-- swarm as SWARM_NAME=who. -/
-def sw (t : T) (who : String) (args : List String) (o : Opts := {}) : IO R := do
-  let bp ← basePath
-  let path := match ← t.fakebin with | some fb => s!"{fb}:{bp}" | none => bp
-  let mut env : List (String × Option String) :=
-    [("SWARM_DB", some t.db), ("SWARM_NAME", some who), ("HC_TERMINAL_ID", o.hc), ("PATH", some path),
-     ("XDG_DATA_HOME", some (← xdg)), ("CLAUDE_CODE_MESSAGING_SOCKET", none), ("CLAUDE_CODE_MESSAGING_TOKEN", none)]
-  if let some l ← t.launchR.get then env := env ++ [("SWARM_LAUNCH", some l)]
-  for (k, v) in o.env do env := (env.filter (·.1 ≠ k)) ++ [(k, v)]
-  -- a faked /proc is Linux's layout; macOS reads sysctl, vm_stat and lsof instead
-  if (env.lookup "SWARM_PROC").join.isSome && (env.lookup "SWARM_OS").join.isNone then
-    env := (env.filter (·.1 ≠ "SWARM_OS")) ++ [("SWARM_OS", some "Linux")]
-  let cwd ← match o.cwd with | some c => pure c | none => t.cwdOf who
-  let r ← t.exec ((← swarmBin) :: args) { env, input := o.stdin, cwd }
-  if o.ok && r.code ≠ 0 then fail s!"swarm {" ".intercalate args} exited {r.code}: {r.stderr}{r.stdout}"
-  return r
-
-/-- t.sw for its effect. -/
-def sw_ (t : T) (who : String) (args : List String) (o : Opts := {}) : IO Unit := discard <| t.sw who args o
-
-/-- swarm hook <ev> with the payload as JSON; its hookSpecificOutput, or {} when it printed nothing. -/
-def hook (t : T) (who ev : String) (payload : Json := Json.mkObj []) (hc : Option String := none) : IO Json := do
-  let payload ← if payload.f "cwd" == .null then
-      pure (payload.setObjVal! "cwd" (← t.cwdOf who)) else pure payload
-  let r ← t.sw who ["hook", ev] { stdin := payload.compress, hc }
-  if strip r.stdout == "" then return Json.mkObj []
-  match Json.parse r.stdout with
-  | .ok j => return j.f "hookSpecificOutput"
-  | .error e => fail s!"hook printed no JSON ({e}): {r.stdout}"
-
-/-- A pre-tool Edit of t.cwd[who]/path. -/
-def edit (t : T) (who path : String) : IO Json := do
-  t.hook who "pre-tool" (Json.mkObj [("tool_name", "Edit"),
-    ("tool_input", Json.mkObj [("file_path", s!"{← t.cwdOf who}/{path}")])])
-
 /-- A cell as JSON. -/
 def cell : Val → Json
   | .null => .null
@@ -259,6 +227,50 @@ def q (t : T) (sql : String) (ps : List Val := []) : IO (Array Json) := do
 
 /-- t.q for its effect. -/
 def q_ (t : T) (sql : String) (ps : List Val := []) : IO Unit := discard <| t.q sql ps
+
+/-- swarm as SWARM_NAME=who, as is. -/
+def swRaw (t : T) (who : String) (args : List String) (o : Opts := {}) : IO R := do
+  let bp ← basePath
+  let path := match ← t.fakebin with | some fb => s!"{fb}:{bp}" | none => bp
+  let mut env : List (String × Option String) :=
+    [("SWARM_DB", some t.db), ("SWARM_NAME", some who), ("HC_TERMINAL_ID", o.hc), ("PATH", some path),
+     ("XDG_DATA_HOME", some (← xdg)), ("CLAUDE_CODE_MESSAGING_SOCKET", none), ("CLAUDE_CODE_MESSAGING_TOKEN", none)]
+  if let some l ← t.launchR.get then env := env ++ [("SWARM_LAUNCH", some l)]
+  for (k, v) in o.env do env := (env.filter (·.1 ≠ k)) ++ [(k, v)]
+  -- a faked /proc is Linux's layout; macOS reads sysctl, vm_stat and lsof instead
+  if (env.lookup "SWARM_PROC").join.isSome && (env.lookup "SWARM_OS").join.isNone then
+    env := (env.filter (·.1 ≠ "SWARM_OS")) ++ [("SWARM_OS", some "Linux")]
+  let cwd ← match o.cwd with | some c => pure c | none => t.cwdOf who
+  let r ← t.exec ((← swarmBin) :: args) { env, input := o.stdin, cwd }
+  if o.ok && r.code ≠ 0 then fail s!"swarm {" ".intercalate args} exited {r.code}: {r.stderr}{r.stdout}"
+  return r
+
+/-- swarm as SWARM_NAME=who; an agent's `task add` is Proposed, and the fixture makes it Ready at once unless `o.proposes`. -/
+def sw (t : T) (who : String) (args : List String) (o : Opts := {}) : IO R := do
+  let r ← t.swRaw who args o
+  if args.take 2 == ["task", "add"] && !o.proposes && r.code == 0 then
+    if let some i := (r.stdout.splitOn "task #")[1]? then
+      if (r.stdout.splitOn "\nProposed:").length > 1 then
+        t.q_ s!"update task set state='ready' where id={String.ofList (i.toList.takeWhile Char.isDigit)}"
+  return r
+
+/-- t.sw for its effect. -/
+def sw_ (t : T) (who : String) (args : List String) (o : Opts := {}) : IO Unit := discard <| t.sw who args o
+
+/-- swarm hook <ev> with the payload as JSON; its hookSpecificOutput, or {} when it printed nothing. -/
+def hook (t : T) (who ev : String) (payload : Json := Json.mkObj []) (hc : Option String := none) : IO Json := do
+  let payload ← if payload.f "cwd" == .null then
+      pure (payload.setObjVal! "cwd" (← t.cwdOf who)) else pure payload
+  let r ← t.sw who ["hook", ev] { stdin := payload.compress, hc }
+  if strip r.stdout == "" then return Json.mkObj []
+  match Json.parse r.stdout with
+  | .ok j => return j.f "hookSpecificOutput"
+  | .error e => fail s!"hook printed no JSON ({e}): {r.stdout}"
+
+/-- A pre-tool Edit of t.cwd[who]/path. -/
+def edit (t : T) (who path : String) : IO Json := do
+  t.hook who "pre-tool" (Json.mkObj [("tool_name", "Edit"),
+    ("tool_input", Json.mkObj [("file_path", s!"{← t.cwdOf who}/{path}")])])
 
 /-- The first row, null when none. -/
 def q1 (t : T) (sql : String) (ps : List Val := []) : IO Json := return (← t.q sql ps)[0]?.getD .null

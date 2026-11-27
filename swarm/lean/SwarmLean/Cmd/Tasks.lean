@@ -109,6 +109,10 @@ def evidenceOnBase (e : String) (t : Task) : m Bool := do
 def landingLine (r : Task) : m String := do
   return s!"{landingText r.id r} since {← Clock.hhmm (r.landing_at.getD 0)}{match py r.owner with | some o => " (from " ++ o ++ ")" | none => ""}"
 
+/-- The word before a place on the board and in `task show`: Ready's is a queue place. -/
+def placeWord (s : Status) : String :=
+  match s with | .backlog => "backlog" | .proposed => "proposed" | _ => "queue"
+
 /-- `task show`'s text (tasks.lua's show branch); `repos` the repos it touches, with their own bases. -/
 def showText (db : Db) (r : Task) (repos : List (String × Option String) := []) : m String := do
   let now ← Clock.now
@@ -135,7 +139,7 @@ def showText (db : Db) (r : Task) (repos : List (String × Option String) := [])
   if !repos.isEmpty then
     s := s ++ s!"\nrepo{if repos.length > 1 then "s" else ""}: " ++ ", ".intercalate (repos.map fun (p, b) =>
       p ++ (match b with | some b => s!" (base {b})" | none => ""))
-  if let some q := Queue.place db r then s := s ++ s!"\n{if r.status = .backlog then "backlog" else "queue"}: {q}"
+  if let some q := Queue.place db r then s := s ++ s!"\n{placeWord r.status}: {q}"
   if let some h := r.note then s := s ++ "\nnote: " ++ cont h
   if !(labelsOf r).isEmpty then s := s ++ "\nlabels: " ++ ", ".intercalate (labelsOf r)
   if !(parentsOf r).isEmpty then s := s ++ s!"\nFiled from {idsText (parentsOf r)} by {r.created_by.getD "-"}"
@@ -201,6 +205,8 @@ def task (a : Parsed) : m UInt32 := do
     let rows ← repos.mapM fun r => do return (r, (a.str "base").filter (· ≠ ""), some (← Bases.default (some r)))
     Swarms.addTaskRepos n rows
     out s!"task #{d n}"
+    if (← Store.view [TaskTxn.task n] fun db => (db.find n).map (·.status)) == some .proposed then
+      out s!"Proposed: staffing and `swarm queue` skip it until the communicator or the user runs `swarm task ready {d n}`"
   | "claim" =>
     -- the claim and the take of its held notes in one transaction: a note posted after it goes to the new owner
     let (r, notes) ← step (TaskTxn.claimTxn { c with force := a.flag "force" } id ((a.str "lease").getD "2h"))
@@ -351,7 +357,7 @@ def board (a : Parsed) : m UInt32 := do
       let wait := if u.isEmpty then "" else
         " waiting on " ++ ", ".intercalate (u.map fun x => "#" ++ d x.id ++ (if x.category = .cancelled then " (cancelled)" else ""))
       pure (s!"#{d r.id} {padRight r.status.name 11} {who}{lease}{wait}  {cont (r.title.getD "")}" ++ pr ++ prog ++
-        (match Queue.place db r with | some q => s!"  [{if r.status = .backlog then "backlog" else "queue"} {q}]" | none => "") ++
+        (match Queue.place db r with | some q => s!"  [{placeWord r.status} {q}]" | none => "") ++
         (if (py r.body).isSome then "  [body: task show]" else "") ++
         (match r.note with | some h => s!"  note: {cont h}" | none => "") ++
         (match py r.evidence with | some e => s!"  [evidence: {e}]" | none => ""))
@@ -367,7 +373,12 @@ def board (a : Parsed) : m UInt32 := do
         for k in kidsOf r do walk n (depth + 1) k
     for r in roots do walk Tree.DEPTH 0 r
   else
-    for r in rows do out (← render r)
+    -- Proposed apart from the rest: its count, then its tasks, which no one staffs until triage
+    let (props, rest) := rows.partition (·.status = .proposed)
+    for r in rest do out (← render r)
+    if !props.isEmpty then
+      out s!"Proposed: {props.length} (not staffed until the communicator or the user runs `swarm task ready <id>`)"
+      for r in props do out (← render r)
   if all then out s!"({rows.length} tasks)"
   else out s!"({rows.length} shown, {((← Swarms.taskStates).filter (·.2 == Status.completed.text)).length} completed)"
   for x in (live db).filter (·.stay.isSome) do
@@ -393,6 +404,8 @@ def queue (a : Parsed) : m UInt32 := do
       out s!"{i + 1}. #{d t.id} {why}  {cont (t.title.getD "")}  [{t.priority.name}]"
     let b := Queue.backlogList db
     if !b.isEmpty then out s!"Backlog: {idsText (b.map (·.id))}"
+    let p := Queue.proposedList db
+    if !p.isEmpty then out s!"Proposed: {idsText (p.map (·.id))}"
   | "add" :: ws@(_ :: _) =>
     let w : Queue.Place := match a.flag "front", a.int "before", a.int "after" with
       | true, _, _ => .front

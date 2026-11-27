@@ -52,7 +52,7 @@ const uniq = (xs, ...keys) => {
   });
 };
 // A task's state is one of STATES (below); counts are keyed by them, categories by CATS.
-const COUNTS = Ox({ backlog: Nx, ready: Nx, in_progress: Nx, needs_input: Nx, in_review: Nx, completed: Nx, cancelled: Nx, duplicate: Nx, ended: Nx });
+const COUNTS = Ox({ backlog: Nx, proposed: Nx, ready: Nx, in_progress: Nx, needs_input: Nx, in_review: Nx, completed: Nx, cancelled: Nx, duplicate: Nx, ended: Nx });
 const CATCOUNTS = Ox({ backlog: Nx, unstarted: Nx, started: Nx, completed: Nx, cancelled: Nx });
 const sumAgent = Ox({ name: Tx, hc: Tx, repo: Tx, repos: Lx(Tx, 50), status: Tx, role: Tx, model: Tx, stay: Tx,
   task: Ox({ id: Nx, title: Tx, state: Tx }), idle_s: Nx, hung: Bx });
@@ -788,10 +788,10 @@ export function agentRows(s) {
   return rows.sort((x, y) => rank(x) - rank(y) || (nat(x.a.name) < nat(y.a.name) ? -1 : 1));
 }
 // Task states (Linear's): each with its display name, and the five categories the board groups and counts by.
-export const STATES = [["backlog", "Backlog"], ["ready", "Ready"], ["in_progress", "In Progress"], ["needs_input", "Needs Input"], ["in_review", "In Review"],
+export const STATES = [["backlog", "Backlog"], ["proposed", "Proposed"], ["ready", "Ready"], ["in_progress", "In Progress"], ["needs_input", "Needs Input"], ["in_review", "In Review"],
   ["completed", "Completed"], ["cancelled", "Cancelled"], ["duplicate", "Duplicate"]];
 export const CATS = [["backlog", "Backlog"], ["unstarted", "Ready"], ["started", "Started"], ["completed", "Completed"], ["cancelled", "Cancelled"]];
-const CAT = { backlog: "backlog", ready: "unstarted", in_progress: "started", needs_input: "started", in_review: "started", completed: "completed", cancelled: "cancelled", duplicate: "cancelled" };
+const CAT = { backlog: "backlog", proposed: "unstarted", ready: "unstarted", in_progress: "started", needs_input: "started", in_review: "started", completed: "completed", cancelled: "cancelled", duplicate: "cancelled" };
 export const stateWord = (s) => STATES.find(([id]) => id === s)?.[1] ?? "";
 export const catOf = (k) => CAT[k?.state] ?? null;
 export const isClosed = (k) => catOf(k) === "completed" || catOf(k) === "cancelled";
@@ -823,29 +823,29 @@ export const childrenRefused = (text) => /open sub-issues/.test(String(text ?? "
 // The refused done or drop `args` (result `r`) to offer --children for, else null.
 export const kidsAskOf = (r, args) => r.code !== 0 && ["done", "drop"].includes(args[1]) && !args.includes("--children") && childrenRefused(r.stderr || r.stdout) ? { args, id: args[2] } : null;
 // The board's tasks still to do, with what each waits on: Needs Input, started, Ready in order (waiting ones after the
-// startable), then Backlog.
+// startable), then Proposed, then Backlog.
 export function boardRows(s) {
   const tasks = s.tasks ?? [], by = byId(tasks);
   const rows = tasks.filter((k) => !isClosed(k)).map((k) => {
     const after = undoneOf(k, by);
     const [state, tone] = k.state === "needs_input" ? ["Needs Input", "blocked"] : k.state === "in_progress" ? [k.assignee ?? k.owner ?? "In Progress", "muted"]
       : k.state === "in_review" ? [k.lander ? `In Review · ${k.lander}` : "In Review", "muted"]
-      : k.state === "backlog" ? ["Backlog", "dim"] : after.length ? [`after ${after.map((d) => `#${d}`).join(" ")}`, "dim"]
+      : k.state === "backlog" ? ["Backlog", "dim"] : k.state === "proposed" ? ["Proposed", "dim"] : after.length ? [`after ${after.map((d) => `#${d}`).join(" ")}`, "dim"]
       : k.assignee ? [`Assigned · ${k.assignee}`, "foreground"] : ["Ready", "foreground"];
     return { k, state, tone, rank: { blocked: 0, muted: 1, foreground: 2, dim: 3 }[tone] };
   });
-  const list = (k) => (k.state === "backlog" ? 1 : 0); // places count within Ready and within Backlog
+  const list = (k) => (k.state === "backlog" ? 2 : k.state === "proposed" ? 1 : 0); // places count within Ready, Proposed and Backlog
   return rows.sort((x, y) => x.rank - y.rank || list(x.k) - list(y.k) || (x.k.place ?? 1e9) - (y.k.place ?? 1e9) || x.k.id - y.k.id);
 }
 
-// The queue (II.3e), in order: Ready by place, then Backlog by place; each task with its label (Next for the first that
+// The queue (II.3e), in order: Ready by place, then Proposed, then Backlog by place; each task with its label (Next for the first that
 // can start, Ready, Waiting on `after`, Reserved for `who`, Backlog with its `note`).
 export function queueRows(s) {
   const tasks = s.tasks ?? [], by = byId(tasks), list = (st) => tasks.filter((k) => k.state === st && k.place != null).sort((x, y) => x.place - y.place || x.id - y.id);
   let first = true;
-  return [...list("ready"), ...list("backlog")].map((k) => {
+  return [...list("ready"), ...list("proposed"), ...list("backlog")].map((k) => {
     const after = undoneOf(k, by);
-    const why = k.state === "backlog" ? "Backlog" : k.assignee ? "Reserved" : after.length ? "Waiting" : first ? "Next" : "Ready";
+    const why = k.state === "backlog" ? "Backlog" : k.state === "proposed" ? "Proposed" : k.assignee ? "Reserved" : after.length ? "Waiting" : first ? "Next" : "Ready";
     if (why === "Next") first = false;
     return { k, why, after, who: k.assignee ?? null, note: k.note ?? null };
   });
@@ -889,7 +889,7 @@ export function barOf(progress, leaves) {
   const done = progress ? progress.done : (leaves ?? []).filter((k) => k.state === "completed").length;
   const total = progress ? progress.total : done + n;
   if (total - done > n) open.backlog = (open.backlog ?? 0) + (total - done - n);
-  return [["completed", done], ...["in_review", "in_progress", "needs_input", "ready", "backlog"].map((s) => [s, open[s] ?? 0])].filter(([, c]) => c > 0);
+  return [["completed", done], ...["in_review", "in_progress", "needs_input", "ready", "proposed", "backlog"].map((s) => [s, open[s] ?? 0])].filter(([, c]) => c > 0);
 }
 // The label groups of the open tasks, the most open first, then by name; a task with several labels is in each (its
 // `labels` length tells); Unlabelled last. [{label, ks, counts}], label null for Unlabelled.
@@ -970,10 +970,10 @@ export const MORE = [["activity", "Activity"], ["landing", "Landing"], ["system"
 export const tabOf = (section) => (TABS.some(([id]) => id === section) ? section : "more");
 // Every priority but the default (Medium) is drawn: None, Urgent, High, Low.
 export const prioWord = (k) => (k?.priority && k.priority !== "medium" ? prioName(k.priority) : null);
-// Where a task stands, as a label: "Queue 4" for Ready, "Backlog 2" for Backlog (a place is within its own list); null when it has none.
-export const placeWord = (k) => (k?.place == null ? null : k.state === "backlog" ? `Backlog ${k.place}` : `Queue ${k.place}`);
+// Where a task stands, as a label: "Queue 4" for Ready, "Backlog 2" for Backlog, "Proposed 1" for Proposed (a place is within its own list); null when it has none.
+export const placeWord = (k) => (k?.place == null ? null : k.state === "backlog" ? `Backlog ${k.place}` : k.state === "proposed" ? `Proposed ${k.place}` : `Queue ${k.place}`);
 // The five categories the Filter and Group by use, each with its states in the board's order, and the label a card or chip shows.
-export const CATEGORIES = [["backlog", "Backlog", ["backlog"]], ["unstarted", "Unstarted", ["ready"]], ["started", "Started", ["in_progress", "needs_input", "in_review"]],
+export const CATEGORIES = [["backlog", "Backlog", ["backlog"]], ["unstarted", "Unstarted", ["proposed", "ready"]], ["started", "Started", ["in_progress", "needs_input", "in_review"]],
   ["completed", "Completed", ["completed"]], ["cancelled", "Cancelled", ["cancelled", "duplicate"]]];
 // The state a category's icon is (Started shows In Progress's, Unstarted Ready's).
 export const CAT_ICON = { backlog: "backlog", unstarted: "ready", started: "in_progress", completed: "completed", cancelled: "cancelled" };
@@ -1008,6 +1008,7 @@ export const passFilter = (k, f) => (!f?.status?.size || f.status.has(k.state)) 
 export const POOL = ["ready", "in_progress", "needs_input", "in_review"];
 export function inPool(k, b) {
   if (b?.tab === "backlog") return k.state === "backlog" && passFilter(k, { prio: b.prio, labels: b.labels });
+  if (b?.tab === "proposed") return k.state === "proposed" && passFilter(k, { prio: b.prio, labels: b.labels });
   return (b?.status?.size ? b.status.has(k.state) : POOL.includes(k.state)) && passFilter(k, b);
 }
 // The groups of a list of tasks: by "label" (cards of a label, `dot` its name, not a state), or "state" (Started's states, then Ready, Backlog and the closed ones, as the canvas orders them), "category",
@@ -1028,7 +1029,7 @@ export function groupBy(tasks, how, empty = false) {
   const defs = how === "category" ? lead(CATEGORIES, ["started", "unstarted", "backlog", "completed", "cancelled"]).map(([id, label, sts]) => ({ key: id, label, state: CAT_ICON[id], cat: id, has: (k) => sts.includes(k.state) }))
     : how === "priority" ? PRIO_ORDER.map((p) => ({ key: p, label: prioName(p) ?? p, prio: p, has: (k) => (k.priority ?? "medium") === p }))
     : how === "none" ? [{ key: "all", label: "Tasks", has: () => true }]
-    : lead(STATES, ["in_progress", "needs_input", "in_review", "ready", "backlog", "completed", "cancelled", "duplicate"]).map(([id, label]) => ({ key: id, label, state: id, cat: CAT[id], has: (k) => k.state === id }));
+    : lead(STATES, ["in_progress", "needs_input", "in_review", "ready", "proposed", "backlog", "completed", "cancelled", "duplicate"]).map(([id, label]) => ({ key: id, label, state: id, cat: CAT[id], has: (k) => k.state === id }));
   return defs.map((d) => ({ ...d, tasks: tasks.filter(d.has) })).filter((g) => empty || g.tasks.length);
 }
 // How long ago a time was: "2d", "3h", "40m", "now".
@@ -1111,7 +1112,8 @@ export function queueSplit(s, f = {}) {
     return { k, why: k.assignee ? "Reserved" : after.length ? "Waiting" : "Ready", after, who: k.assignee ?? null };
   }).sort(place);
   const backlog = tasks.filter((k) => k.state === "backlog" && pass(k)).map((k) => ({ k, why: "Backlog", after: undoneOf(k, by), who: k.assignee ?? null, note: k.note ?? null })).sort(place);
-  return { doing, next, waiting, backlog, cut: up.cut, chips: up.chips, of: undoneIds(tasks).size, shown: doing.length + next.length + waiting.length + backlog.length };
+  const proposed = tasks.filter((k) => k.state === "proposed" && pass(k)).map((k) => ({ k, why: "Proposed", after: undoneOf(k, by), who: k.assignee ?? null, note: null })).sort(place);
+  return { doing, next, waiting, proposed, backlog, cut: up.cut, chips: up.chips, of: undoneIds(tasks).size, shown: doing.length + next.length + waiting.length + proposed.length + backlog.length };
 }
 // The Board's graph (research/sw-graph-view.md, II.9): `seed` is the ids the Board's pool holds (`inPool`); the graph adds the tasks
 // they wait on, one hop (a Completed or Cancelled one drawn as `fin`), and the edges among them. Nodes {k, layer, slot, fin,

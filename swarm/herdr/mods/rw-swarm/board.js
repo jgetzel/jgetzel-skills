@@ -14,7 +14,7 @@ import { parentProp, parentPicker, subIssues } from "./queue.js";
 import { SELECT, addrOf, answerArgs, cancelArgs, childrenArgs, completeArgs, kidsAskOf, dropDepArgs, nudgeArgs, dur, line, prioName, repoName, showAll, stateWord, placeWord, evCells,
   barOf, isClosed, groupBy, inPool } from "./tree.js";
 
-const WORD = { block: "Needs Input", prog: "In Progress", land: "In Review", ready: "Ready", back: "Backlog", done: "Completed" };
+const WORD = { block: "Needs Input", prog: "In Progress", land: "In Review", ready: "Ready", prop: "Proposed", back: "Backlog", done: "Completed" };
 // A group opens to its first 25 rows, 100 more at a time.
 const CAP = 25, CAP_MORE = 100;
 const QUIET_READ = 30000; // the board is read again this often without events: its ages and leases move
@@ -26,7 +26,7 @@ const hash = (x) => { let h = 0; for (const c of String(x)) h = (h * 31 + c.char
 const who = (a) => (a === "human" ? "you" : a ?? "someone");
 const openUrl = (url) => url && /^https:\/\//.test(url) && exec(win()?.platform === "macos" ? "open" : "xdg-open", [url]);
 
-// A task's board state: Needs Input, In Progress, In Review, Ready, Backlog, Completed; Cancelled and Duplicate: none.
+// A task's board state: Needs Input, In Progress, In Review, Ready, Proposed, Backlog, Completed; Cancelled and Duplicate: none.
 export function stateOf(k) {
   switch (k.state) {
     case "needs_input": return "block";
@@ -34,6 +34,7 @@ export function stateOf(k) {
     case "in_review": return "land";
     case "completed": return "done";
     case "backlog": return "back";
+    case "proposed": return "prop";
     case "ready": return "ready";
     default: return null;
   }
@@ -332,7 +333,7 @@ export class SwarmBoard {
     const deps = (k.undone ?? []).slice(0, 2).map((d) => { const o = this.taskBy.get(d), dead = o && (o.state === "cancelled" || o.state === "duplicate");
       return h_flex().h(18).px(5).gap(4).flex_none().items_center().rounded(kit.R.tag).border(1).border_color(dead ? c.asks + "88" : t.border).text_size(10).text_color(dead ? c.asks : t.dim)
         .child(kit.taskGlyph(t, kit.glyphOf(o?.state ?? "ready"), 10)).child(div().font_family(this.mono()).when(dead, (e) => e.line_through()).child(`#${d}`)); });
-    const place = placeWord(k), note = k.st === "ready" || k.st === "back"
+    const place = placeWord(k), note = k.st === "ready" || k.st === "prop" || k.st === "back"
       ? h_flex().gap(6).items_center().children([place ? kit.chipText(t, place) : null, ...deps, k.st === "back" && k.note ? kit.noteChip(t, line(k.note, 60)) : null].filter(Boolean)) : null;
     const tags = (k.repos ?? []).filter((r) => r.repo !== path).map((r) => kit.repoTag(t, r.repo, repoName(r.repo).slice(0, 6)));
     if (k.st === "block") tags.push(kit.button(t, `sb-ans-${gk}-${k.id}`, "Answer", (cx) => { cx.stop_propagation(); this.pickTask(cx, k); }, { kind: "danger", small: true }));
@@ -376,7 +377,7 @@ export class SwarmBoard {
     const props = v_flex().id("sb-pk-props").flex_none().px(16).py(12).gap(8)
       .child(prop("State", [kit.taskGlyph(t, st), div().child(stateWord(k.state))]))
       .child(prop("Priority", div().child(prioName(k.priority) ?? "Medium")))
-      .when(k.place != null, (el) => el.child(prop(k.state === "backlog" ? "Backlog" : "Queue", div().font_family(this.mono()).child(String(k.place)))))
+      .when(k.place != null, (el) => el.child(prop(k.state === "backlog" ? "Backlog" : k.state === "proposed" ? "Proposed" : "Queue", div().font_family(this.mono()).child(String(k.place)))))
       .when(repos.length > 0, (el) => el.child(prop("Repos", v_flex().gap(4).children(repos.map((r) => h_flex().gap(6).items_center().flex_wrap()
         .child(kit.repoTag(t, r.repo, repoName(r.repo).slice(0, 6))).child(div().child(repoName(r.repo)))
         .when(Boolean(r.base), (e) => e.child(div().text_size(kit.TYPE.meta).text_color(t.dim).child(`base ${r.base}`)))

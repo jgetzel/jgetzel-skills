@@ -12,7 +12,7 @@ import { SELECT, CATEGORIES, CAT_ICON, PRIO_ORDER, STATES, toggleCategory, toggl
 const kilo = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n ?? 0));
 const CAPTION = { backlog: "Backlog", unstarted: "Unstarted", started: "Started", completed: "Completed", cancelled: "Cancelled" };
 const PRIO_NAME = { none: "No priority", urgent: "Urgent", high: "High", medium: "Medium", low: "Low" };
-const STAT = (c) => ({ backlog: c.backlog ?? 0, ready: c.ready ?? 0, in_progress: c.in_progress ?? 0, needs_input: c.needs_input ?? 0, in_review: c.in_review ?? 0,
+const STAT = (c) => ({ backlog: c.backlog ?? 0, proposed: c.proposed ?? 0, ready: c.ready ?? 0, in_progress: c.in_progress ?? 0, needs_input: c.needs_input ?? 0, in_review: c.in_review ?? 0,
   completed: c.completed ?? 0, cancelled: c.cancelled ?? 0, duplicate: c.duplicate ?? 0 });
 
 // The Board's own state, kept on the view (side and full are separate copies, as the view's own state is).
@@ -106,7 +106,7 @@ function toolbar(v, t, s, wide) {
     .bg(b.tab === id ? t.selected : t.surface).text_color(b.tab === id ? t.foreground : t.muted).hover((x) => x.text_color(t.foreground))
     .on_click((_e, cx) => { b.tab = id; b.menu = null; cx.notify(); }).child(label).when(n != null, (e) => e.child(div().font_family(kit.mono()).text_size(kit.TYPE.meta).text_color(t.dim).child(String(n))));
   const tabs = h_flex().id("bt-tabs").flex_none().p(3).gap(2).rounded(8).border(1).border_color(t.border).bg(t.surface)
-    .children([mk("active", "Active", leftOf(c)), mk("backlog", "Backlog", c.backlog ?? 0), mk("history", "History", null)]);
+    .children([mk("active", "Active", leftOf(c)), mk("proposed", "Proposed", c.proposed ?? 0), mk("backlog", "Backlog", c.backlog ?? 0), mk("history", "History", null)]);
   const filterBtn = pop(v, "filter", button(t, "bt-filter", wide ? [funnel(t), div().child("Filter")] : [funnel(t)]), filterMenu(v, t, s));
   const groupBtn = pop(v, "display", button(t, "bt-display", wide ? [stack(t), div().child(v.boardMode() === "graph" ? "Display" : `Group: ${{ category: "Category", state: "State", priority: "Priority", label: "Label", parent: "Parent", none: "None" }[v.boardMode() === "repo" ? b.repoGroup : b.group]}`), div().text_color(t.dim).child("⌄")] : [stack(t)]), displayMenu(v, t));
   const newBtn = wide ? kit.button(t, "bt-new", h_flex().gap(6).items_center().child(plus()).child(div().child("New task")), (cx) => v.toggleNew(cx), { kind: "primary" })
@@ -144,14 +144,14 @@ function iconBtn(t, id, ch, args, v) {
 // drop (the label whose card it is in), indent (px of tree depth)}
 export function taskRow(v, t, s, k, o) {
   const b = bt(v), wide = o.wide, c = kit.colors(t), hov = b.hover === k.id, now = s.now ?? Date.now() / 1000;
-  const ready = k.state === "ready", back = k.state === "backlog", started = ["in_progress", "needs_input", "in_review"].includes(k.state);
+  const ready = k.state === "ready", prop = k.state === "proposed", back = k.state === "backlog" || prop, started = ["in_progress", "needs_input", "in_review"].includes(k.state);
   const waiting = (k.undone ?? []).length > 0, dim = waiting || back;
   const agent = k.owner ? (s.agents ?? []).find((a) => a.name === k.owner) : null;
   const status = k.state === "needs_input" ? "asks" : agent?.status === "working" ? "working" : "idle";
   const ls = [...new Set(k.labels ?? [])], other = o.drop != null ? ls.filter((l) => l !== o.drop) : ls; // inside a label's card the row drops that label and counts its labels
   const labels = [...(wide ? other.slice(0, 2).map((l) => kit.labelTag(t, l)) : []), ...(o.drop != null && ls.length > 1 ? [kit.chipText(t, `×${ls.length}`)] : [])];
   const title = div().min_w(0).truncate().text_color(dim ? t.muted : t.foreground).child(plain(k.title ?? ""));
-  const mid = back && k.note ? v_flex().flex_1().min_w(0).gap(3).child(title)
+  const mid = k.state === "backlog" && k.note ? v_flex().flex_1().min_w(0).gap(3).child(title)
       .child(h_flex().gap(5).items_center().pl(0).min_w(0).child(kit.noteChip(t, k.note).max_w("100%"))) : h_flex().flex_1().min_w(0).child(title);
   const lst = o.lst, i = o.i ?? (lst ? lst.findIndex((x) => x.k.id === k.id) : -1), mv = (how) => (i >= 0 && lst.length > 1 ? moveArgs(lst, i, how) : null);
   const acts = wide && hov && (ready || back) ? h_flex().gap(2).items_center()
@@ -177,7 +177,7 @@ export function taskRow(v, t, s, k, o) {
     if (acts) right.push(acts);
     else if (wide) right.push(div().flex_none().text_color(t.dim).text_size(kit.TYPE.meta).child([k.created_by ?? "", k.created_at ? ageWord(now - k.created_at) : ""].filter(Boolean).join(" · ")));
   }
-  return h_flex().id(`tr-${o.gk}-${k.id}`).min_h(back && k.note ? 52 : 34).px(12).py(back && k.note ? 6 : 0).gap(10).items_center().min_w(0).rounded(6).cursor_pointer()
+  return h_flex().id(`tr-${o.gk}-${k.id}`).min_h(k.state === "backlog" && k.note ? 52 : 34).px(12).py(k.state === "backlog" && k.note ? 6 : 0).gap(10).items_center().min_w(0).rounded(6).cursor_pointer()
     .when(hov, (e) => e.bg(t.hover)).on_hover((h, cx) => { if (h) { if (b.hover !== k.id) { b.hover = k.id; cx.notify(); } } else if (b.hover === k.id) { b.hover = null; cx.notify(); } })
     .on_click(() => v.openTask(k.id)).children(o.indent ? [div().w(o.indent).flex_none()] : [])
     .child(div().w(14).flex_none().text_right().font_family(kit.mono()).text_size(kit.TYPE.meta).text_color(t.dim).child(o.n != null ? String(o.n) : ""))
@@ -238,17 +238,18 @@ const place = (a, c) => (a.place ?? 1e9) - (c.place ?? 1e9) || a.id - c.id;
 // The Ready and Backlog lists in place order (a row's move buttons read them) and what auto-spawn starts.
 function listsOf(s) {
   const all = s.tasks ?? [], up = nextUp(s), startIds = new Set(up.rows.filter((r) => r.starts).map((r) => r.k.id));
-  const readyLst = all.filter((k) => k.state === "ready").sort(place).map((k) => ({ k })), backLst = all.filter((k) => k.state === "backlog").sort(place).map((k) => ({ k }));
+  const readyLst = all.filter((k) => k.state === "ready").sort(place).map((k) => ({ k })), backLst = all.filter((k) => k.state === "backlog").sort(place).map((k) => ({ k })),
+    propLst = all.filter((k) => k.state === "proposed").sort(place).map((k) => ({ k }));
   const at = new Map(); // each task's index in its own list
-  for (const l of [readyLst, backLst]) l.forEach((x, i) => at.set(x.k.id, i));
-  return { readyLst, backLst, at, startIds, cut: up.cut, nextId: up.rows[0]?.k.id ?? null };
+  for (const l of [readyLst, backLst, propLst]) l.forEach((x, i) => at.set(x.k.id, i));
+  return { readyLst, backLst, propLst, at, startIds, cut: up.cut, nextId: up.rows[0]?.k.id ?? null };
 }
 // What taskRow needs of a task beyond its card: its place and list, whether it starts, whether it is next.
 function rowOpts(L, k) {
-  const lst = k.state === "ready" ? L.readyLst : k.state === "backlog" ? L.backLst : null, j = lst ? L.at.get(k.id) ?? -1 : -1;
+  const lst = k.state === "ready" ? L.readyLst : k.state === "backlog" ? L.backLst : k.state === "proposed" ? L.propLst : null, j = lst ? L.at.get(k.id) ?? -1 : -1;
   return { n: j >= 0 ? j + 1 : null, lst, i: j, startable: k.state === "ready" && !k.assignee && !(k.undone ?? []).length, next: k.id === L.nextId && k.state === "ready" };
 }
-const RANK = ["needs_input", "in_progress", "in_review", "ready", "backlog", "completed", "cancelled", "duplicate"];
+const RANK = ["needs_input", "in_progress", "in_review", "ready", "proposed", "backlog", "completed", "cancelled", "duplicate"];
 
 // The Active tab: started tasks above unstarted ones, grouped as the Display menu says (State, Category, Priority, Label, Parent or None).
 function activeTab(v, t, s, wide, cx) {
@@ -264,8 +265,8 @@ function activeTab(v, t, s, wide, cx) {
   const out = []; let lastCat = null, budget = BUDGET - openN; // the opened card first: its Show more always shows more
   for (const g of groups) {
     if (b.group === "state" && g.cat !== lastCat) { lastCat = g.cat; out.push(caption(t, CAPTION[g.cat], groups.filter((x) => x.cat === g.cat).reduce((a, x) => a + x.tasks.length, 0))); }
-    const sorted = [...g.tasks].sort((x, y) => byLabel ? RANK.indexOf(x.state) - RANK.indexOf(y.state) || (x.state === y.state && (x.state === "ready" || x.state === "backlog") ? place(x, y) : x.id - y.id)
-      : (x.state === "ready" || x.state === "backlog") && x.state === y.state ? place(x, y) : x.id - y.id);
+    const sorted = [...g.tasks].sort((x, y) => byLabel ? RANK.indexOf(x.state) - RANK.indexOf(y.state) || (x.state === y.state && (x.state === "ready" || x.state === "proposed" || x.state === "backlog") ? place(x, y) : x.id - y.id)
+      : (x.state === "ready" || x.state === "proposed" || x.state === "backlog") && x.state === y.state ? place(x, y) : x.id - y.id);
     const rows = []; let lastStart = -1;
     if (g.state === "ready" && cut > 0) sorted.forEach((k, i) => { if (L.startIds.has(k.id)) lastStart = i; });
     const n = g === opened ? openN : Math.min(sorted.length, SHUT, budget), shown = sorted.slice(0, n);
@@ -276,13 +277,17 @@ function activeTab(v, t, s, wide, cx) {
     });
     if (lastStart >= n && cut > 0) rows.push(freeSlots(t, cut));
     if (n < sorted.length || b.more === g.key) rows.push(moreRow(v, t, g.key, sorted.length - n));
-    const right = g.state === "ready" ? "Staffed top down" : g.state === "backlog" ? "Ordered · auto-spawn skips" : null;
+    const right = g.state === "ready" ? "Staffed top down" : g.state === "backlog" ? "Ordered · auto-spawn skips" : g.state === "proposed" ? "Waits for triage · auto-spawn skips" : null;
     out.push(card(t, `bt-g-${g.key}`, cardHead(t, g.state ?? CAT_ICON[g.cat], g.label, g.tasks.length, right, byLabel ? g.dot : null), rows.length ? rows : [empty(t, "Nothing here")]));
   }
   if (hiddenLabels > 0) out.push(h_flex().h(30).px(12).gap(8).items_center()
     .child(div().id("bt-more-labels").text_color(t.ansi4).cursor_pointer().hover((x) => x.underline()).on_click((_e, cx) => { b.cardsMore = true; cx.notify(); }).child("More labels"))
     .child(countText(t, hiddenLabels)));
   if (!out.length) out.push(empty(t, b.status.size || b.prio.size || b.labels.size ? "No task matches" : "Nothing is left to do"));
+  const np = (s.counts?.proposed ?? 0);
+  if (!b.status.size && np) out.push(h_flex().h(34).px(12).gap(8).items_center().text_color(t.dim)
+    .child(kit.taskGlyph(t, "prop", 12)).child(div().child("Proposed")).child(div().font_family(kit.mono()).text_size(kit.TYPE.meta).child(String(np))).child(div().flex_1())
+    .child(div().id("bt-open-proposed").text_color(t.ansi4).cursor_pointer().hover((x) => x.underline()).on_click((_e, cx) => { b.tab = "proposed"; cx.notify(); }).child("Open Proposed")));
   const nb = (s.counts?.backlog ?? 0);
   if (!b.status.size && nb) out.push(h_flex().h(34).px(12).gap(8).items_center().text_color(t.dim)
     .child(kit.taskGlyph(t, "back", 12)).child(div().child("Backlog")).child(div().font_family(kit.mono()).text_size(kit.TYPE.meta).child(String(nb))).child(div().flex_1())
@@ -337,6 +342,16 @@ function parentCards(v, t, s, wide, cx, L) {
   if (none.length) out.push(card(t, "bt-g-noparent", cardHead(t, null, "No parent", none.length), flat));
   if (!out.length) out.push(empty(t, b.status.size || b.prio.size || b.labels.size ? "No task matches" : "Nothing is left to do"));
   return out;
+}
+// The Proposed tab: what agents filed and no one has triaged, in place order; Move to Ready (or the state menu) triages one.
+function proposedTab(v, t, s, wide, cx) {
+  const b = bt(v), all = s.tasks ?? [], order = (a, c2) => (a.place ?? 1e9) - (c2.place ?? 1e9) || a.id - c2.id;
+  const lst = all.filter((k) => k.state === "proposed").sort(order).map((k) => ({ k })), tasks = lst.map((x) => x.k).filter((k) => inPool(k, b));
+  const at = new Map(lst.map((x, i) => [x.k.id, i]));
+  const n = Math.min(tasks.length, b.more === "prop" ? OPEN : SHUT * 2);
+  const rows = tasks.slice(0, n).map((k) => taskRow(v, t, s, k, { gk: "prop", n: at.get(k.id) + 1, wide, lst, i: at.get(k.id) }));
+  if (n < tasks.length || b.more === "prop") rows.push(moreRow(v, t, "prop", tasks.length - n));
+  return [caption(t, "Proposed", tasks.length), card(t, "bt-g-proposed", cardHead(t, "proposed", "Proposed", tasks.length, "Waits for triage · auto-spawn skips"), rows.length ? rows : [empty(t, "Nothing is proposed")])];
 }
 function backlogTab(v, t, s, wide, cx) {
   const b = bt(v), all = s.tasks ?? [], order = (a, c2) => (a.place ?? 1e9) - (c2.place ?? 1e9) || a.id - c2.id;
@@ -397,7 +412,7 @@ export function boardHead(v, t, s, wide) {
 }
 // The List's body (and History's, in every view): the cards of the tab.
 export function boardTab(v, t, s, wide, cx) {
-  const b = bt(v), body = b.tab === "backlog" ? backlogTab(v, t, s, wide, cx) : b.tab === "history" ? historyTab(v, t, s, wide, cx) : activeTab(v, t, s, wide, cx);
+  const b = bt(v), body = b.tab === "proposed" ? proposedTab(v, t, s, wide, cx) : b.tab === "backlog" ? backlogTab(v, t, s, wide, cx) : b.tab === "history" ? historyTab(v, t, s, wide, cx) : activeTab(v, t, s, wide, cx);
   return v_flex().id("bt").w_full().gap(10).children(body);
 }
 

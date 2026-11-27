@@ -113,9 +113,9 @@ def depsOf (r : Task) : List Int := (commaPieces (r.deps.getD "")).filterMap par
 def undone (db : Db) (r : Task) : List Task :=
   (depsOf r).filterMap fun i => (db.find i).filter (·.status ≠ .completed)
 
-/-- Ready and Backlog tasks whose deps name `tid` (tasks.waiters). -/
+/-- Ready, Proposed and Backlog tasks whose deps name `tid` (tasks.waiters). -/
 def waiters (db : Db) (tid : Int) : List Task :=
-  db.tasks.filter fun t => (t.status = .ready || t.status = .backlog) && match t.deps with
+  db.tasks.filter fun t => t.status.preStart && match t.deps with
     | some ds => hasSub ("," ++ ds ++ ",") ("," ++ d tid ++ ",")
     | none => false
 
@@ -362,7 +362,9 @@ def add (c : Ctx) (a : AddArgs) (db : Db) : Db × Except String Nat :=
     | .error e => (db, .error e)
     | .ok () =>
       let id := db.taskNext
-      let t : Task := { id, title := some a.title, body := some a.body, created_by := some c.me,
+      -- an agent's task waits for triage (Proposed); the communicator's, the user's and CI's (never through here) are Ready
+      let state : TaskState := if inCharge db c.comms c.me then .ready none else .proposed none
+      let t : Task := { id, title := some a.title, body := some a.body, created_by := some c.me, state,
                         deps := py (some (",".intercalate (a.deps.map d))), model := a.model, effort := a.effort,
                         base := a.base, created_at := some c.now, priority := a.priority.getD DEFAULT_PRIORITY,
                         pos := some (endPos db),
@@ -381,7 +383,10 @@ def claim (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
     if r.status = .backlog && !forced then
       (db, .error s!"task #{d id} is in Backlog{match r.note with | some n => ": " ++ n | none => ""}; {if c.force then "only the communicator or the user can --force it"
         else "`swarm task ready` it first (or the communicator's --force)"}")
-    else if (r.status = .ready || r.status = .backlog) && (py r.assignee).any (· != c.me) && !forced then
+    else if r.status = .proposed && !forced then
+      (db, .error s!"task #{d id} is Proposed, waiting for triage; {if c.force then "only the communicator or the user can --force it"
+        else "the communicator or the user runs `swarm task ready` on it first (or the communicator's --force)"}")
+    else if r.status.preStart && (py r.assignee).any (· != c.me) && !forced then
       (db, .error s!"task #{d id} is assigned to {(py r.assignee).getD ""}; only it claims it{if c.force then " (only the communicator or the user can --force it)"
         else " (or the communicator's --force)"}")
     else
@@ -403,10 +408,10 @@ def claim (c : Ctx) (id : Int) (lease : String) (db : Db) : Db × Except String 
         | some r1 =>
           if stopPending db r1 then
             (db, .error s!"task #{d id} was released from {r1.stop_to.getD ""}, which hasn't read the stop yet; try again once it has")
-          else if (r1.status = .ready || r1.status = .backlog) && !blockedByDeps db r1 then
+          else if r1.status.preStart && !blockedByDeps db r1 then
             let db := db.set id (claimF c.me «until» k c.now)
             (db.log c.now (some c.me) "claim" none (some s!"#{d id} {r.title.getD ""}"), .ok ⟨«until», py r.body⟩)
-          else match (if r1.status = .ready || r1.status = .backlog then undone db r1 else []) with
+          else match (if r1.status.preStart then undone db r1 else []) with
             | dep :: _ => (db, .error s!"#{d id} waits on #{d dep.id} ({dep.status.name})")
             | [] => (db, .error s!"task #{d id} is {r1.status.name}{owned r1}")
 
@@ -415,8 +420,8 @@ def after (c : Ctx) (id : Int) (deps : List Int) (db : Db) : Db × Except String
   match db.find id with
   | none => (db, .error s!"no task #{d id}")
   | some r =>
-    if r.status ≠ .ready && r.status ≠ .backlog then
-      (db, .error s!"task #{d id} is {r.status.name}; only a Ready or Backlog task's dependencies can change")
+    if !r.status.preStart then
+      (db, .error s!"task #{d id} is {r.status.name}; only a Ready, Proposed or Backlog task's dependencies can change")
     else match setDeps db id deps with
       | .error e => (db, .error e)
       | .ok (db', ds) =>

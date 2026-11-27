@@ -51,7 +51,7 @@ db is at the current version; a db made before the version existed reads 0 and i
 Bump it, with an entry in `dbMigrations`, whenever `WF` or the schema changes: an older binary then refuses to write
 (`Real.checkWritable`), so the "only our code writes" assumption under `wf_reach` (sw-global-proofs.md §3.7) holds across
 binaries built at different commits. -/
-def DB_VERSION : Nat := 3
+def DB_VERSION : Nat := 4
 
 /-- Version 2 (Linear's states): the task states renamed (open → ready, claimed → in_progress, blocked → needs_input,
 landing → in_review, done → completed, dropped → cancelled); a held open task, and with a swarm's queue-only on an
@@ -97,10 +97,15 @@ def migrateV3 : List String := [
   "alter table task add column parent int",
   "create index if not exists task_parent on task(parent)"]
 
+/-- Version 4 (Proposed): the task state `proposed`, an unstarted state beside Backlog that an agent's `task add` files in. No
+statement: the column is text and every state is a value of it, but a binary from before version 4 reads `proposed` as
+no state, so it must refuse the db (`Real.checkWritable`) once a newer binary has connected. -/
+def migrateV4 : List String := []
+
 /-- The migrations: `(v, sqls)` takes a db at version `v - 1` to `v`, run in order by `connect` in one BEGIN IMMEDIATE.
 Obligation (for the proofs phase): if `WF_{v-1} db` then `WF_v` holds of the db after `sqls`, where `WF_v` is `WF` at
 the commit that bumped `DB_VERSION` to `v`. -/
-def dbMigrations : List (Nat × List String) := [(2, migrateV2), (3, migrateV3)]
+def dbMigrations : List (Nat × List String) := [(2, migrateV2), (3, migrateV3), (4, migrateV4)]
 
 /-- The meta keys of the machine (scope `''`); every other key is a swarm's (scope: its name). -/
 def machineKeys : List String := ["watchd", "watchd_tick", "watchd_up", "watchd_run", "machines", "jobs"]

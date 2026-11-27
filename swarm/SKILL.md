@@ -217,16 +217,23 @@ with subagents.
   later (you get a notice with the job's command line). A real run (CPU time, a process starting, a waiter such as
   `gh`, `ssh`, `swarm`, `hc`, `nix`) is never ended, nor is any agent holding a claim, lock or stay.
   `watchd` (and a watch split, if you opened one) are yours to kill, by PID.
-- **States.** A task is Backlog, Ready, In Progress, Needs Input, In Review, Completed, Cancelled or Duplicate
-  (Linear's categories: Backlog, Unstarted, Started, Completed, Cancelled). `task claim` makes a Ready task In
+- **States.** A task is Backlog, Proposed, Ready, In Progress, Needs Input, In Review, Completed, Cancelled or Duplicate
+  (Linear's categories: Backlog, Unstarted, Started, Completed, Cancelled; Proposed is Unstarted beside Ready). A task an
+  agent adds (`task add`) is **Proposed**: a proposal that waits for your triage, which `queue`, the pool a free
+  agent is offered, `--reuse-below` offers and auto-spawn skip as they skip Backlog, and `task claim` refuses. Tasks
+  you, the user (`SWARM_NAME=human`, Herdr's + New task) or CI (`main red:`) add are Ready at once. Triage with the
+  commands that exist: `swarm task ready <id>` (to the end of Ready), `task backlog <id> --note …`, `task drop <id>`
+  (`--duplicate-of <orig>` folds a proposal into the task that already covers it), or `task edit <id> --append` to
+  fold its finding into a task. `swarm board` lists Proposed apart from Ready and Backlog with its count, and the
+  Herdr Swarm panel has a Proposed tab. `task claim` makes a Ready task In
   Progress, `task block` Needs Input, `task land` In Review, `task done` Completed; `swarm task drop <id> [--note T]`
   cancels it, `--duplicate-of <orig>` makes it a Duplicate linked to its original. Needs Input and In Review come
   only from those commands.
 - **Dependencies.** `swarm task add "<title>" --after 3,5 [--model M] [--effort E]` keeps a
   task out of the pool (and out of auto-spawn) until #3 and #5 are Completed. A Cancelled dependency still blocks
   and is yours to settle: drop it from the list or drop the task.
-  `swarm task after <id> <list>` changes a Ready or Backlog task's list later (refusing a cycle).
-- **Ready and Backlog.** Ready is one ordered list, and it is the staffing order: the pool a free agent is offered
+  `swarm task after <id> <list>` changes a Ready, Proposed or Backlog task's list later (refusing a cycle).
+- **Ready, Proposed and Backlog.** Ready is one ordered list, and it is the staffing order: the pool a free agent is offered
   and auto-spawn take it top down, a red main (`main red:`) first of all. A new task goes to the end.
   `swarm queue` lists it; `swarm queue add <id>… [--front | --before <id> | --after <id>]` moves tasks in it (any
   agent may move one to the end, the other moves are yours or the user's); `queue rm` moves them to the end.
@@ -234,7 +241,7 @@ with subagents.
   refuses it (your `claim --force` overrides) until you or the user run `swarm task ready <id>`, which puts it at
   the end of Ready. A Backlog task is not a needs-you item. It never preempts: it takes no claimed task and stops no
   agent.
-- **Assignees.** `swarm task assign <id> <who>` (or `--none`; you or the user) reserves a Ready or Backlog task for
+- **Assignees.** `swarm task assign <id> <who>` (or `--none`; you or the user) reserves a Ready, Proposed or Backlog task for
   an agent or `human` without claiming it: auto-spawn and the pool skip it, and anyone else's claim fails naming the
   assignee (`--force` overrides). A claim makes the claimer the assignee; a human's claim has no expiring lease, so
   watchd never frees it.

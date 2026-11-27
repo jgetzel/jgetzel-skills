@@ -214,7 +214,7 @@ def groupBy [BEq κ] [Hashable κ] (xs : List α) (key : α → List κ) : Std.H
 
 /-- A task row as state prints it: its columns but the body, its timing, lease left (none for a person's claim), deps,
 the deps not Completed (`undone`) and the Cancelled or Duplicate ones among them, waiting and blocks. `evs`: its events;
-`st`: each task's state; `pl`: each Ready and Backlog task's place; `waitersOf`: the Ready and Backlog tasks naming it a
+`st`: each task's state; `pl`: each Ready, Proposed and Backlog task's place; `waitersOf`: the Ready and Backlog tasks naming it a
 dep. -/
 def taskJson (r : Task) (tree : Tasks.Tree) (evs : List Event) (t : Int) (st : Std.HashMap Int Status) (pl : Std.HashMap Int Nat)
     (waitersOf : Array Task) : Json :=
@@ -372,7 +372,7 @@ def summary (db : Db) (sts : List (Int × Status)) (p : String) (t : Int) : m Js
   let rss := ((Machine.holders db.agents (← Machine.procs)).filter (·.agent != "other session")).foldl (· + ·.kb) 0
   let stOf : Std.HashMap Int Status := sts.foldl (fun h (i, st) => h.insert i st) {}
   -- a Ready or Backlog task waiting on a Cancelled dependency: remove the dependency, or cancel it too
-  let depCancelled := db.tasks.filter fun r => r.category = .unstarted || r.category = .backlog
+  let depCancelled := db.tasks.filter fun r => (r.category = .unstarted || r.category = .backlog) && r.status != .proposed
   let depCancelled := depCancelled.filterMap fun r =>
     match (Tasks.depsOf r).filter fun x => stOf[x]?.any (·.category == .cancelled) with
     | [] => none
@@ -483,7 +483,8 @@ def state (a : Parsed) : m UInt32 := do
   let stOf : Std.HashMap Int Status := sts.foldl (fun h (i, st) => h.insert i st) {}
   let waitersBy := groupBy (db.tasks.filter Queue.unstarted) fun x => (Tasks.depsOf x).eraseDups
   let pl : Std.HashMap Int Nat := (Queue.readyList db).zipIdx.foldl (fun h (r, i) => h.insert r.id (i + 1))
-    ((Queue.backlogList db).zipIdx.foldl (fun h (r, i) => h.insert r.id (i + 1)) {})
+    ((Queue.backlogList db).zipIdx.foldl (fun h (r, i) => h.insert r.id (i + 1))
+      ((Queue.proposedList db).zipIdx.foldl (fun h (r, i) => h.insert r.id (i + 1)) {}))
   let ownBy := groupBy (db.tasks.filter fun r => r.status = .inProgress || r.status = .needsInput) (·.owner.toList)
   let evBy := groupBy db.events (·.agent.toList)
   let msgBy := groupBy db.msgs fun r => (r.frm.toList ++ r.dest.toList).eraseDups
