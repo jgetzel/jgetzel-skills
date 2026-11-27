@@ -490,7 +490,7 @@ def valueText : Value → Option ByteArray
   | .null => none
   | .int i => some (int64ToBytes i)
   | .real f => some (fmtRealBytes f)
-  | .text s => some (cstr s.toUTF8)
+  | .text s => some (cstr (textBytes s))
   | .blob b => some (cstr b)
 
 private def modLoop (args : Array Value) (now : Option Int64) (p : DT) (i : Nat) : Nat → Option DT
