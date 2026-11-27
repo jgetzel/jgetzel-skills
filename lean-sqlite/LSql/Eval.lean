@@ -166,7 +166,9 @@ def fnOf (name : String) : ScalarFn :=
   | "LENGTH" => .of fun env a x y z anyNull => .ok (match x with
     | .null => .null
     | .blob b => .int b.size.toInt64
-    | v => .int (v.toText.takeWhile (· != '\x00')).positions.length.toInt64)
+    | v =>
+      let t := v.toText.takeWhile (· != '\x00')
+      .int (if hasEsc v.toText then charCount t.copy else t.positions.length).toInt64)
   | "OCTET_LENGTH" => .of fun env a x y z anyNull => .ok (match x with | .null => .null | v => .int v.toBytes.size.toInt64)
   | "LOWER" => .of fun env a x y z anyNull => .ok (match x with | .null => .null | v => .text (lowerAscii v.toText))
   | "UPPER" => .of fun env a x y z anyNull => .ok (match x with | .null => .null | v => .text (upperAscii v.toText))
@@ -187,7 +189,7 @@ def fnOf (name : String) : ScalarFn :=
     .ok (if anyNull then .null else
       let s := x.toText
       let f := y.toText
-      if f.isEmpty then .text s else .text (s.replace f z.toText))
+      if f.isEmpty then .text s else .text (canonText (s.replace f z.toText)))
   | "TRIM" | "LTRIM" | "RTRIM" => .of fun env a x y z anyNull =>
     .ok (if x.isNull || (a.size > 1 && y.isNull) then .null else
       let cs := if a.size > 1 then y.toText.toList else [' ']
@@ -204,11 +206,11 @@ def fnOf (name : String) : ScalarFn :=
     .ok (boolV (likeMatch x.toBytes y.toBytes esc))
   | "GLOB" => .of fun env a x y z anyNull => .ok (if anyNull then .null else boolV (globMatch x.toBytes y.toBytes))
   | "PRINTF" | "FORMAT" => .of fun env a x y z anyNull => .ok (if x.isNull then .null else .text (Num.printf x.toText (a.toList.drop 1)))
-  | "CONCAT" => .of fun env a x y z anyNull => .ok (.text (a.foldl (fun s v => if v.isNull then s else s ++ v.toText) ""))
+  | "CONCAT" => .of fun env a x y z anyNull => .ok (.text (canonText (a.foldl (fun s v => if v.isNull then s else s ++ v.toText) "")))
   | "CONCAT_WS" => .of fun env a x y z anyNull =>
     .ok (if x.isNull then .null else
       let parts := (a.toList.drop 1).filter (!·.isNull) |>.map (·.toText)
-      .text (x.toText.intercalate parts))
+      .text (canonText (x.toText.intercalate parts)))
   | "LAST_INSERT_ROWID" => .of fun env a x y z anyNull => .ok (.int env.lastRowid)
   | "CHANGES" => .of fun env a x y z anyNull => .ok (.int env.changes)
   | "TOTAL_CHANGES" => .of fun env a x y z anyNull => .ok (.int env.totalChanges)
@@ -422,7 +424,7 @@ def aggFinal (name : String) (acc : AggAcc) : EM Value :=
   | "AVG" => .ok (if acc.n == 0 then .null else .real (r / acc.n.toFloat))
   | "TOTAL" => .ok (.real r)
   | "MIN" | "MAX" => .ok acc.best
-  | _ => .ok (if acc.any then .text acc.str else .null)
+  | _ => .ok (if acc.any then .text (canonText acc.str) else .null)
 
 /-! ## Rows -/
 
@@ -474,12 +476,13 @@ where
         else fr
       go fr upto hs (pos + l) (body + serialLen t) (i+1) f
 
-/-- A WITHOUT ROWID table's record as a row of slots: each field in its column (`layout`), the rowid slot NULL. -/
-def worRow (n : Nat) (layout : Array Nat) (realCols : Array Bool) (rec_ : ByteArray) : Row :=
+/-- A WITHOUT ROWID table's record as a row of slots: each field in its column (`layout`), a field the record lacks (a column
+added by ALTER TABLE) its default, the rowid slot NULL. -/
+def worRow (n : Nat) (layout : Array Nat) (realCols : Array Bool) (defaults : Array Value) (rec_ : ByteArray) : Row :=
   let vs := decodeRecord rec_
   layout.size.fold (fun k _ (row : Row) =>
     let c := layout.getD k 0
-    let v := vs.getD k .null
+    let v := vs.getD k (defaults.getD c .null)
     let v := match v with | .int x => if realCols.getD c false then .real x.toFloat else v | v => v
     row.setIfInBounds c v) (Array.replicate (n + 1) .null)
 
@@ -1686,11 +1689,11 @@ def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row
         return (#[], ((schemaPragma e.schema (fn.drop 7).toString ((vs.getD 0 .null).toText)).map (·.2)).getD #[])
       let rows ← tvfRows (fn == "json_tree") (vs.getD 0 .null) vs[1]?
       return (#[], rows)
-    | .table root n _ realCols _ _ _ _ _ layout _ => do
+    | .table root n _ realCols defaults _ _ _ _ layout _ => do
       let p := e.pager
       -- a WITHOUT ROWID table: its index-format tree's records, each field placed in its column
       if !layout.isEmpty then
-        return (#[], BTree.foldIndex p root #[] fun acc r => acc.push (worRow n layout realCols r))
+        return (#[], BTree.foldIndex p root #[] fun acc r => acc.push (worRow n layout realCols defaults r))
       let dec (rs : Array (Int64 × ByteArray)) : Array (Int64 × ByteArray) × Array Row := (rs, #[])
       let find (k : Int64) : Array (Int64 × ByteArray) :=
         match BTree.tableFind p root k with | some c => #[(k, c.payload)] | none => #[]

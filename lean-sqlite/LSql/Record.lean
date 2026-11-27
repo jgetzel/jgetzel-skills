@@ -1,13 +1,8 @@
 import LSql.Bytes
+import LSql.Text
 import LSql.Value
 /-! sqlite's record format (fileformat2.html §2.1): a varint header size, one serial type per column, then the bodies. -/
 namespace LSql
-
-/-- A text column's bytes as a String (invalid UTF-8, which sqlite would keep, is read byte by byte as Latin-1). -/
-def textOfBytes (b : ByteArray) : String :=
-  match String.fromUTF8? b with
-  | some s => s
-  | none => b.foldl (fun s c => s.push (Char.ofNat c.toNat)) ""
 
 /-- Serial type and body length of a value. -/
 def serialType : Value → UInt64 × Nat
@@ -21,7 +16,7 @@ def serialType : Value → UInt64 × Nat
     else if -140737488355328 ≤ i && i ≤ 140737488355327 then (5, 6)
     else (6, 8)
   | .real _ => (7, 8)
-  | .text s => let n := s.utf8ByteSize; (13 + 2 * n.toUInt64, n)
+  | .text s => let n := textLen s; (13 + 2 * n.toUInt64, n)
   | .blob b => (12 + 2 * b.size.toUInt64, b.size)
 
 /-- Body length of a serial type. -/
@@ -36,7 +31,7 @@ def pushBody (b : ByteArray) : Value → ByteArray
   | .null => b
   | v@(.int i) => let (_, n) := serialType v; pushBE b i.toUInt64 n
   | .real f => pushBE b f.toBits 8
-  | .text s => b ++ s.toUTF8
+  | .text s => b ++ textBytes s
   | .blob x => b ++ x
 
 /-- A record's header for fields of these serial types and body lengths (with room for the bodies). -/

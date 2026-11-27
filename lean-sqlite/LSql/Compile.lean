@@ -279,6 +279,9 @@ def constDefault : Option Expr → Value
   | some (.un .neg (.lit (.real f))) => .real (-f)
   | _ => .null
 
+/-- A column's default as a stored value: a row older than the column (ALTER TABLE ADD COLUMN) reads it through the column's affinity. -/
+def columnDefault (c : Column) : Value := Value.applyAff c.aff (constDefault c.default)
+
 def stripCollate (e : Expr) : Expr := match e with | .collate x _ => x | x => x
 
 /-- An ORDER BY term's direction, NULLs placement and collation (a result column's, unless it has COLLATE). -/
@@ -851,7 +854,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           | none => throw s!"no such table: {name}"
           | some t =>
             let n := t.cols.size
-            pure (CSource.table t.root n t.ipk (t.cols.map (·.aff == .real)) (t.cols.map (constDefault ·.default)) slot .full
+            pure (CSource.table t.root n t.ipk (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) slot .full
                 left right t.layout #[],
               { name := an, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
                 base := slot, rowid := if t.withoutRowid then none else some (slot + n), hidden := t.cols.map fun _ => false,

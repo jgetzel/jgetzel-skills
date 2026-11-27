@@ -1,4 +1,5 @@
 import LSql.Num
+import LSql.Record
 import LSql.Value
 
 /-! The sqlite3 shell's result output modes, ported from the shell's QRF library (ext/qrf/qrf.c) and
@@ -173,7 +174,7 @@ private def spaces (n : Nat) : ByteArray := bytesRepeat 32 n
 private def padSp (b : ByteArray) (n : Nat) : ByteArray :=
   if n == 0 then b else b ++ bytesRepeat 32 n
 
-private def strBytes (s : String) : ByteArray := cstr s.toUTF8
+private def strBytes (s : String) : ByteArray := cstr (textBytes s)
 
 private def hexLo : UInt8 → UInt8
   | n => if n < 10 then 48 + n else 87 + n

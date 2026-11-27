@@ -53,10 +53,7 @@ where
     | 0 => true
     | f+1 => rd c i == 32 && allSpaces c (i+1) f
 
-@[inline] def strByte (s : String) (i : Nat) : UInt8 :=
-  if h : (⟨i⟩ : String.Pos.Raw) < s.rawEndPos then s.getUTF8Byte ⟨i⟩ h else 0
-
-/-- Compares two strings' UTF-8 bytes in place under a collation. -/
+/-- Compares two strings' UTF-8 bytes in place under a collation (an escaped byte compares as the raw byte). -/
 def cmpStrings (coll : Collation) (a b : String) : Ordering :=
   let an := a.utf8ByteSize
   let bn := b.utf8ByteSize
@@ -75,7 +72,9 @@ where
       let x := strByte a k
       let y := strByte b k
       let (x, y) := if coll == .nocase then (foldCase x, foldCase y) else (x, y)
-      if x < y then .lt else if x > y then .gt else go (k+1) f
+      if x == y then go (k+1) f
+      else if (x < 0x80 && y < 0x80) || !(hasEsc a || hasEsc b) then (if x < y then .lt else .gt)
+      else cmpBytes coll (textBytes a) 0 (textBytes a).size (textBytes b) 0 (textBytes b).size
   spaces (s : String) (i : Nat) : Nat → Bool
     | 0 => true
     | f+1 => strByte s i == 32 && spaces s (i+1) f
@@ -142,12 +141,14 @@ where
       | .eq => go ha hb (pa + la) (pb + lb) (oa + serialLen ta) (ob + serialLen tb) (i+1) fuel
       | o => if ki.desc.getD i false then o.swap else o
 
-/-- Compares `a`'s bytes `[ai, ai+an)` with a string's UTF-8 bytes in place under a collation. -/
+/-- Compares `a`'s bytes `[ai, ai+an)` with a string's UTF-8 bytes in place under a collation (a string with an escaped byte
+is compared by its raw bytes). -/
 def cmpBytesString (coll : Collation) (a : ByteArray) (ai an : Nat) (s : String) : Ordering :=
   let bn := s.utf8ByteSize
   match go 0 (min an bn) with
   | .eq =>
-    if an == bn then .eq
+    if hasEsc s then (let sb := textBytes s; cmpBytes coll a ai an sb 0 sb.size)
+    else if an == bn then .eq
     else if coll == .rtrim then
       if an < bn then (if spaces s an (bn - an) then .eq else .lt)
       else (if allSpaces a (ai + bn) (an - bn) then .eq else .gt)
@@ -160,7 +161,9 @@ where
       let x := rd a (ai + k)
       let y := strByte s k
       let (x, y) := if coll == .nocase then (foldCase x, foldCase y) else (x, y)
-      if x < y then .lt else if x > y then .gt else go (k+1) f
+      if x == y then go (k+1) f
+      else if (x < 0x80 && y < 0x80) || !(hasEsc s) then (if x < y then .lt else .gt)
+      else (let sb := textBytes s; cmpBytes coll a ai an sb 0 sb.size)
   spaces (s : String) (i : Nat) : Nat → Bool
     | 0 => true
     | f+1 => strByte s i == 32 && spaces s (i+1) f
