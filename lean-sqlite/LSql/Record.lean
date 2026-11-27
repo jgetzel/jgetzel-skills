@@ -39,17 +39,19 @@ def pushBody (b : ByteArray) : Value → ByteArray
   | .text s => b ++ s.toUTF8
   | .blob x => b ++ x
 
-/-- The record of a row. -/
-def encodeRecord (vals : Array Value) : ByteArray :=
-  let types := vals.map serialType
+/-- A record's header for fields of these serial types and body lengths (with room for the bodies). -/
+def recordHeader (types : Array (UInt64 × Nat)) : ByteArray :=
   let h : Nat := types.foldl (fun n (t, _) => n + varintLen t) 0
   -- the header size counts its own varint
   let hs := if h + 1 < 128 then h + 1 else if h + 2 < 16384 then h + 2 else h + 3
   let bodyLen : Nat := types.foldl (fun n (_, l) => n + l) 0
   let b := ByteArray.emptyWithCapacity (hs + bodyLen)
   let b := putVarint b hs.toUInt64
-  let b := types.foldl (fun b (t, _) => putVarint b t) b
-  vals.foldl pushBody b
+  types.foldl (fun b (t, _) => putVarint b t) b
+
+/-- The record of a row. -/
+def encodeRecord (vals : Array Value) : ByteArray :=
+  vals.foldl pushBody (recordHeader (vals.map serialType))
 
 /-- The integer of an integer serial type (1 to 6, 8, 9) whose body starts at `o`: read in place, no `Value`. -/
 def intField (p : ByteArray) (o : Nat) (t : UInt64) : Int64 :=
@@ -109,5 +111,17 @@ where
 
 /-- The number of columns in a record. -/
 def recordArity (p : ByteArray) : Nat := (recordFields p).size
+
+/-- A record of `n` fields: field `i` copied from record `old` (`fields`: its `recordFields`) where `keep i`, serial type
+and body bytes, nothing decoded; else the value `v i`. -/
+def spliceRecord (old : ByteArray) (fields : Array (UInt64 × Nat)) (n : Nat) (keep : Nat → Bool) (v : Nat → Value) :
+    ByteArray :=
+  let kept (i : Nat) : Bool := i < fields.size && keep i
+  let types := Array.ofFn (n := n) fun j =>
+    let i := j.val
+    if kept i then let t := (fields.getD i (0, 0)).1; (t, serialLen t) else serialType (v i)
+  n.fold (fun i _ b =>
+    if kept i then old.copySlice (fields.getD i (0, 0)).2 b b.size (types.getD i (0, 0)).2 false else pushBody b (v i))
+    (recordHeader types)
 
 end LSql

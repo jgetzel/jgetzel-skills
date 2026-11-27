@@ -160,6 +160,22 @@ def indexKey (t : Table) (ix : Index) (row : Row) (rowid : Int64) : ByteArray :=
 def recordOf (t : Table) (row : Row) : ByteArray :=
   encodeRecord (row.mapIdx fun i v => if t.ipk == some i then .null else v)
 
+/-- The row an UPDATE replaces: its slots that the statement reads (`row`), its record and that record's fields, and
+which columns the SET clauses change. -/
+structure OldRow where
+  row : Row
+  record : ByteArray
+  fields : Array (UInt64 × Nat)
+  changed : Array Bool
+
+/-- The record of an UPDATE's new row: the columns it leaves alone copied from the old record, the others encoded (a
+column past the old record's end has its default). -/
+def recordOver (t : Table) (row : Row) (o : OldRow) : ByteArray :=
+  spliceRecord o.record o.fields t.cols.size (fun i => !o.changed.getD i true && t.ipk != some i) fun i =>
+    if t.ipk == some i then .null
+    else if o.changed.getD i true || i < o.fields.size then row.getD i .null
+    else constDefault (t.cols.getD i default).default
+
 def tableRow (t : Table) (rowid : Int64) (rec_ : ByteArray) : Row :=
   decodeRow t.cols.size t.ipk (t.cols.map (·.aff == .real)) (t.cols.map (constDefault ·.default)) rowid rec_
 
@@ -174,14 +190,31 @@ def uniqueConflict (p : Pager) (t : Table) (ix : Index) (row : Row) (rowid : Int
 def uniqueMsg (t : Table) (ix : Index) : String :=
   "UNIQUE constraint failed: " ++ ", ".intercalate (ix.cols.toList.map fun c => s!"{t.name}.{(t.cols.getD c default).name}")
 
-/-- Removes a row and its index entries. -/
-def deleteRowP (idxs : Array Index) (t : Table) (rowid : Int64) (p : Pager) : Pager :=
+/-- The slots of a row (its columns, then its rowid) that its index entries read: an index's columns, or all of them for
+an index on expressions or a partial one. -/
+def indexNeed (t : Table) (idxs : Array Index) : Array Bool :=
+  if idxs.any fun ix => ix.hasExprs || ix.pred.isSome then Array.replicate (t.cols.size + 1) true else
+  idxs.foldl (fun m ix => ix.cols.foldl (fun m c => m.setIfInBounds c true) m) (Array.replicate (t.cols.size + 1) false)
+
+/-- A table row's slots that `need` marks, decoded from its record (the others NULL). -/
+def tableRowNeed (t : Table) (need : Array Bool) (rowid : Int64) (rec_ : ByteArray) : Row :=
+  fillRow (Array.replicate (t.cols.size + 1) .null) 0 t.cols.size t.ipk (t.cols.map (·.aff == .real))
+    (t.cols.map (constDefault ·.default)) need rowid rec_
+
+/-- Removes a row (`row`: as stored, at least the slots `indexNeed` marks) and its index entries. -/
+def deleteRowOf (idxs : Array Index) (t : Table) (row : Row) (rowid : Int64) (p : Pager) : Pager :=
+  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (indexKey t ix row rowid)) p
+  BTree.tableDelete p t.root rowid
+
+/-- Removes a row and its index entries (`need`: `indexNeed`). -/
+def deleteRowN (need : Array Bool) (idxs : Array Index) (t : Table) (rowid : Int64) (p : Pager) : Pager :=
   match BTree.tableFind p t.root rowid with
   | none => p
-  | some c =>
-    let row := tableRow t rowid c.payload
-    let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (indexKey t ix row rowid)) p
-    BTree.tableDelete p t.root rowid
+  | some c => deleteRowOf idxs t (tableRowNeed t need rowid c.payload) rowid p
+
+/-- Removes a row and its index entries. -/
+def deleteRowP (idxs : Array Index) (t : Table) (rowid : Int64) (p : Pager) : Pager :=
+  deleteRowN (indexNeed t idxs) idxs t rowid p
 
 /-- Whether a row (its slots, then its rowid) belongs in an index: always, unless a partial index's WHERE is not true. -/
 def inIndex (s : Schema) (env : Env) (t : Table) (ix : Index) (frame : Row) : Bool :=
@@ -233,7 +266,7 @@ def checkRow (t : Table) (frame : Row) : XS (Option String) := do
 
 /-- Writes one row (constraints checked, conflicts resolved); false when OR IGNORE skipped it. -/
 def writeRow (t : Table) (idxs : Array Index) (row : Row) (rowid : Int64) (conflict : Conflict)
-    (oldRowid : Option Int64) : XS Bool := do
+    (oldRowid : Option Int64) (old : Option OldRow := none) : XS Bool := do
   -- NOT NULL
   let mut row := row
   for i in [0:t.cols.size] do
@@ -271,8 +304,11 @@ def writeRow (t : Table) (idxs : Array Index) (row : Row) (rowid : Int64) (confl
       | _ => runErr (uniqueMsg t ix)
     | none => pure ()
   -- the old row goes, then the new one and its index entries
-  if let some o := oldRowid then modPager (deleteRowP idxs t o)
-  let rec_ := recordOf t row
+  if let some o := oldRowid then
+    modPager (match old with | some o' => deleteRowOf idxs t o'.row o | none => deleteRowP idxs t o)
+  let rec_ := match old with
+    | some o => recordOver t row o
+    | none => recordOf t row
   modPager fun p =>
     let p := BTree.tableInsert p t.root rowid rec_
     (idxs.zip holds).foldl (fun p (ix, h) => if h then BTree.indexInsert p ix.keyInfo ix.root (indexKey t ix row rowid) else p) p
@@ -319,6 +355,15 @@ def matching (t : Table) (w : Option Expr) : XS (Array Row) := do
   let (cq, _, _) ← compileQ q
   let rows ← liftR (runSel (← envX) cq fuel0)
   return if t.withoutRowid then rows.map (·.push .null) else rows
+
+/-- The rowids of the rows a WHERE clause selects from a rowid table. -/
+def matchingRowids (t : Table) (w : Option Expr) : XS (Array Int64) := do
+  let qn := "\x00" ++ (if t.temp then "temp" else "main") ++ "\x00" ++ t.name
+  let cols := [ResultCol.expr (.col (some t.name) "rowid" false) none "rowid"]
+  let q : Select := .mk false [] (.select false cols (some (.table qn (some t.name))) [] w [] none) [] [] none none
+  let (cq, _, _) ← compileQ q
+  let rows ← liftR (runSel (← envX) cq fuel0)
+  return rows.filterMap fun r => match r.getD 0 .null with | .int k => some k | _ => none
 
 /-! ### WITHOUT ROWID tables: an index-format tree whose records are the key columns, then the rest -/
 
@@ -994,13 +1039,55 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
       | none => if !t.withoutRowid && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none else parseErr s!"no such column: {c}"
     let ((ce, _, _), _) ← liftP ((compileExpr { schema := s, scopes := tableScope t :: sc } e fuel0).run {})
     pure (tgt, ce)
+  let hasTriggers := s.triggers.any (nameEq ·.table t.name)
+  if !isView && !t.withoutRowid && !hasTriggers && conflict != .replace then
+    -- each row decodes the columns the statement reads; its new record copies the others
+    let ks ← matchingRowids t w
+    if ks.size ≤ 1 then modPager Pager.noStmtJournal
+    let n := t.cols.size
+    let all := !t.checks.isEmpty || t.strict || (← get).returned.isSome
+    let need := if all then Array.replicate (n + 1) true else
+      let need := Array.zipWith (· || ·) (neededSlots (n + 1) (targets.map (·.2))) (indexNeed t idxs)
+      let need := t.cols.size.fold (fun i _ m => if (t.cols.getD i default).notNull then m.setIfInBounds i true else m) need
+      need.setIfInBounds n true
+    let changed := targets.foldl (fun m (tgt, _) => match tgt with
+      | some i => m.setIfInBounds i true
+      | none => m) (Array.replicate n false)
+    let mut cnt : Int64 := 0
+    for oldRowid in ks do
+      let some c := BTree.tableFind (← get).pager t.root oldRowid | continue
+      let old := tableRowNeed t need oldRowid c.payload
+      let mut row := old.extract 0 n
+      let mut nr := oldRowid
+      for (tgt, ce) in targets do
+        let v ← liftR (eval ((← envX).push old) ce fuel0)
+        match tgt with
+        | some i =>
+          let v := Value.applyAff (t.cols.getD i default).aff v
+          if t.ipk == some i then
+            match toRowid? v with
+            | some k => nr := k
+            | none => if v.isNull then nr := ← newRowid t else runErr "datatype mismatch"
+          else row := row.setIfInBounds i v
+        | none =>
+          match toRowid? v with
+          | some k => nr := k
+          | none => runErr "datatype mismatch"
+      let row2 := match t.ipk with | some i => row.setIfInBounds i (.int nr) | none => row
+      try
+        let o : OldRow := { row := old, record := c.payload, fields := recordFields c.payload, changed }
+        if ← writeRow t idxs row2 nr conflict (some oldRowid) (some o) then
+          cnt := cnt + 1
+          if all then noteRow (row2.push (.int nr))
+      catch e => if isIgnore e then pure () else throw e
+    setChanges cnt
+    return
   let rows ← if isView then do
       let q : Select := .mk false [] (.select false [.star] (some (.table tn none)) [] w [] none) [] [] none none
       let (cq, _, _) ← compileQ q
       let rs ← liftR (runSel (← envX) cq fuel0)
       pure (rs.map (·.push .null))
     else matching t w
-  let hasTriggers := s.triggers.any (nameEq ·.table t.name)
   if rows.size ≤ 1 && !hasTriggers then modPager Pager.noStmtJournal
   let setCols := sets.map (·.1)
   let mut n : Int64 := 0
@@ -1061,6 +1148,14 @@ def delete (qtn : String) (w : Option Expr) : Nat → XS Unit
       else BTree.foldTable p t.root 0 fun n _ _ => n + 1
     modPager fun p => idxs.foldl (fun p ix => BTree.clear p ix.root) (BTree.clear p t.root)
     setChanges n
+    return
+  if !hasTriggers && !isView && !t.withoutRowid && (← get).returned.isNone then
+    -- only the rowids, and of each row only its index keys
+    let ks ← matchingRowids t w
+    modPager Pager.noStmtJournal
+    let need := indexNeed t idxs
+    modPager fun p => ks.foldl (fun p k => deleteRowN need idxs t k p) p
+    setChanges ks.size.toInt64
     return
   let rows ← if isView then do
       let q : Select := .mk false [] (.select false [.star] (some (.table tn none)) [] w [] none) [] [] none none
