@@ -1029,7 +1029,7 @@ def appendSqlValue (o : ByteArray) (v : Value) (isJ : Bool) : Except String Byte
   | .null => .ok (ByteArray.append o (bs "null"))
   | .real f => .ok (ByteArray.append o (floatBytes f))
   | .int i => .ok (ByteArray.append o (Num.int64ToBytes i))
-  | .text s => if isJ then .ok (ByteArray.append o s.toUTF8) else .ok (appendQuoted o s.toUTF8)
+  | .text s => if isJ then .ok (ByteArray.append o (textBytes s)) else .ok (appendQuoted o (textBytes s))
   | .blob b =>
     match asJsonb b with
     | some j => .ok (ByteArray.append o (render j))
@@ -1045,10 +1045,10 @@ def argToJ (v : Value) (isJ : Bool) : Except String J :=
     | none => .error "JSON cannot hold BLOB values"
   | .text s =>
     if isJ then
-      match parseDoc s.toUTF8 with
+      match parseDoc (textBytes s) with
       | .ok (j, _) => .ok j
       | .error _ => .error "malformed JSON"
-    else .ok (.str (quoteStr s.toUTF8))
+    else .ok (.str (quoteStr (textBytes s)))
   | .int i => .ok (.int (Num.int64ToBytes i))
   | .real f =>
     if f != f then .ok .null
@@ -1310,7 +1310,7 @@ def callJ (name : String) (args : Array Value) (isJson : Array Bool) : Res :=
       match args.getD i .null with
       | .text s =>
         if i > 0 then o := o.push 44
-        o := (appendQuoted o s.toUTF8).push 58
+        o := (appendQuoted o (textBytes s)).push 58
         o ← appendSqlValue o (args.getD (i + 1) .null) (isJson.getD (i + 1) false)
       | _ => throw "json_object() labels must be TEXT"
     return (textV (o.push 125), true)

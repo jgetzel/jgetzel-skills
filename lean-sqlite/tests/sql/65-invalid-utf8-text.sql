@@ -73,3 +73,11 @@ select cast(x'ff61' as text), cast(x'c3a9' as text);
 select cast(x'ff61' as text), cast(x'c3a9' as text);
 .mode line
 select cast(x'ff61' as text), cast(x'c3a9' as text);
+-- json
+select hex(json_quote(cast(x'ff61' as text))), hex(json_array(cast(x'ff61' as text)));
+select hex(json_object(cast(x'ff61' as text), cast(x'80' as text)));
+select hex(json_quote(json(cast(x'ff61' as text))));
+select hex(json_array(json('"a"'), cast(x'c3a9' as text)));
+select hex(json_set('{}', '$.a', cast(x'ff61' as text)));
+select json_valid(cast(x'ff61' as text)), json_valid(cast(x'227f22' as text));
+select hex(strftime('%Y', cast(x'ff61' as text)));
