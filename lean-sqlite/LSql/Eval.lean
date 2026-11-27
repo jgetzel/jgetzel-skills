@@ -202,8 +202,11 @@ def fnOf (name : String) : ScalarFn :=
         if (name == "MIN" && o == .lt) || (name == "MAX" && o == .gt) then v else best) x)
   | "LIKE" => .of fun env a x y z anyNull =>
     if x.isNull || y.isNull || (a.size > 2 && z.isNull) then .ok .null else
-    let esc := if a.size > 2 then (z.toBytes)[0]? else none
-    .ok (boolV (likeMatch x.toBytes y.toBytes esc))
+    if a.size > 2 then
+      match likeEscape z.toBytes with
+      | some esc => .ok (boolV (likeMatch x.toBytes y.toBytes (some esc)))
+      | none => .error "ESCAPE expression must be a single character"
+    else .ok (boolV (likeMatch x.toBytes y.toBytes none))
   | "GLOB" => .of fun env a x y z anyNull => .ok (if anyNull then .null else boolV (globMatch x.toBytes y.toBytes))
   | "PRINTF" | "FORMAT" => .of fun env a x y z anyNull => .ok (if x.isNull then .null else .text (Num.printf x.toText (a.toList.drop 1)))
   | "CONCAT" => .of fun env a x y z anyNull => .ok (.text (canonText (a.foldl (fun s v => if v.isNull then s else s ++ v.toText) "")))
@@ -964,9 +967,9 @@ def «match» (op : MatchOp) (fx fp : CFn) (fe : Option CFn) (neg : Bool) : CFn 
   if let some ev := ev then if ev.isNull then return .null
   let escB ← match ev with
     | some ev =>
-      let b := ev.toBytes
-      if b.size == 0 || charLen b 0 != b.size then throw "ESCAPE expression must be a single character"
-      pure (some (rd b 0))
+      match likeEscape ev.toBytes with
+      | some e => pure (some e)
+      | none => throw "ESCAPE expression must be a single character"
     | none => pure none
   let m := match op with
     | .glob => globMatch pv.toBytes v.toBytes
@@ -974,7 +977,7 @@ def «match» (op : MatchOp) (fx fp : CFn) (fe : Option CFn) (neg : Bool) : CFn 
   return boolV (m != neg)⟩
 
 /-- LIKE or GLOB against a constant pattern (and escape): their bytes are taken once, not per row. -/
-def matchLit (op : MatchOp) (fx : CFn) (pat : ByteArray) (esc : Option UInt8) (neg : Bool) : CFn := ⟨fun env => do
+def matchLit (op : MatchOp) (fx : CFn) (pat : ByteArray) (esc : Option ByteArray) (neg : Bool) : CFn := ⟨fun env => do
   let v ← fx.run env
   if v.isNull then return .null
   let m := match op with
@@ -1092,9 +1095,9 @@ def compileE (sub : SubRun) : CExpr → Nat → CFn
     match pat, esc with
     | .lit pv, none => if pv.isNull then generic else Compiled.matchLit op (compileE sub x fuel) pv.toBytes none neg
     | .lit pv, some (.lit ev) =>
-      let b := ev.toBytes
-      if pv.isNull || ev.isNull || b.size == 0 || charLen b 0 != b.size then generic
-      else Compiled.matchLit op (compileE sub x fuel) pv.toBytes (some (rd b 0)) neg
+      match likeEscape ev.toBytes with
+      | some e => if pv.isNull || ev.isNull then generic else Compiled.matchLit op (compileE sub x fuel) pv.toBytes (some e) neg
+      | none => generic
     | _, _ => generic
   | .isNull x neg => Compiled.isNull neg (compileE sub x fuel)
   | .inSelRow es q neg affs colls => Compiled.inSelRow sub q (es.map (compileE sub · fuel)) neg affs colls
