@@ -78,17 +78,6 @@ where
     | .null, _ | _, .null => false
     | _, _ => cmpValues coll a b == .eq
 
-/-- CAST to an affinity. -/
-def castV (aff : Aff) (v : Value) : Value :=
-  match v with
-  | .null => .null
-  | v => match aff with
-    | .integer => .int (Num.castToInt v)
-    | .real => .real (Num.castToReal v)
-    | .numeric => Num.castToNumeric v
-    | .text => .text v.toText
-    | .blob | .none => .blob v.toBytes
-
 /-- A value as a rowid, if it equals one. -/
 def toRowid? (v : Value) : Option Int64 :=
   match Value.applyAff .integer v with
