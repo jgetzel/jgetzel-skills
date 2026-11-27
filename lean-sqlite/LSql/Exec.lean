@@ -538,7 +538,7 @@ def dropTable (name : String) (ifExists : Bool) : XS Unit := do
   let some t := s.table? name
     | if ifExists then return else parseErr s!"no such table: {name}"
   if nameEq name "sqlite_sequence" || nameEq name "sqlite_schema" then parseErr s!"table {name} may not be dropped"
-  let idxs := s.indexesOf t.name
+  let idxs := s.indexesOfTable t
   modPager fun p => BTree.drop (idxs.foldl (fun p ix => BTree.drop p ix.root) p) t.root
   dropSchemaRows t.name true t.temp
   -- its sqlite_sequence row goes too
@@ -848,10 +848,12 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
           parseErr s!"cannot modify {tn} because it is a view"
         pure (← viewTable v, true)
       | none => parseErr s!"no such table: {tn}"
-  let idxs := s.indexesOf t.name
+  let idxs := s.indexesOfTable t
   if !upserts.isEmpty && t.withoutRowid then parseErr "lean-sqlite: upsert on a WITHOUT ROWID table is not supported"
   -- target columns (a "rowid" column names the rowid itself)
-  let targets : Array (Option Nat) ← if cols.isEmpty then pure ((List.range t.cols.size).toArray.map some) else
+  -- (none given: the values are in column order, and the targets are not built)
+  let direct := cols.isEmpty && !(src matches .defaults)
+  let targets : Array (Option Nat) ← if cols.isEmpty then pure #[] else
     cols.toArray.mapM fun c => match t.colIndex? c with
       | some i => pure (some i)
       | none => if !t.withoutRowid && !isView && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none
@@ -868,23 +870,25 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
       let (cq, _, _) ← compileQ q
       liftR (runSel (← envX) cq fuel0)
   let targets := if src matches .defaults then #[] else targets
+  let width := if direct then t.cols.size else targets.size
   let hasTriggers := s.triggers.any (nameEq ·.table t.name)
   -- one row can only fail before it writes: the statement journal is not needed
   if rows.size ≤ 1 && !hasTriggers && upserts.isEmpty then modPager Pager.noStmtJournal
-  let defaults ← t.cols.mapM fun c => match c.default with
+  let defaults ← if direct then pure #[] else t.cols.mapM fun c => match c.default with
     | some d => evalConst d
     | none => pure .null
   let mut n : Int64 := 0
   for r in rows do
-    if r.size != targets.size then
+    if r.size != width then
       if cols.isEmpty then parseErr s!"table {t.name} has {t.cols.size} columns but {r.size} values were supplied"
       else parseErr s!"{r.size} values for {targets.size} columns"
-    let mut row := defaults
+    let mut row := if direct then r else defaults
     let mut explicitRowid : Option Value := none
-    for (tgt, v) in targets.zip r do
-      match tgt with
-      | some i => row := row.setIfInBounds i v
-      | none => explicitRowid := some v
+    if !direct then
+      for (tgt, v) in targets.zip r do
+        match tgt with
+        | some i => row := row.setIfInBounds i v
+        | none => explicitRowid := some v
     row := row.mapIdx fun i v => Value.applyAff (t.cols.getD i default).aff v
     if isView then
       try fire .insteadOf .insert t (some (row.push .null)) none [] fuel; n := n + 1
@@ -982,7 +986,7 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
           parseErr s!"cannot modify {tn} because it is a view"
         pure (← viewTable v, true)
       | none => parseErr s!"no such table: {tn}"
-  let idxs := s.indexesOf t.name
+  let idxs := s.indexesOfTable t
   let sc ← scopesX
   let targets ← sets.toArray.mapM fun (c, e) => do
     let tgt ← match t.colIndex? c with
@@ -1048,7 +1052,7 @@ def delete (qtn : String) (w : Option Expr) : Nat → XS Unit
           parseErr s!"cannot modify {tn} because it is a view"
         pure (← viewTable v, true)
       | none => parseErr s!"no such table: {tn}"
-  let idxs := s.indexesOf t.name
+  let idxs := s.indexesOfTable t
   let hasTriggers := s.triggers.any (nameEq ·.table t.name)
   if w.isNone && !hasTriggers && !isView then
     -- the whole table: clear its trees
@@ -1259,8 +1263,8 @@ def runStmt (db : DB) (s : Stmt) : DB × Except Err Result × Bool :=
   | s =>
     let inTxn := db.inTxn
     let sch0 := db.schema
-    let db := if inTxn then db else { db with pager := db.pager.beginAutocommit }
-    let db := { db with pager := db.pager.beginStmt }
+    -- (outside a transaction, beginAutocommit also starts the statement journal)
+    let db := { db with pager := if inTxn then db.pager.beginStmt else db.pager.beginAutocommit }
     match (exec1 s 64).run db with
     | .ok r db =>
       let writes := match s with | .select _ => false | .pragma _ none => false | _ => true

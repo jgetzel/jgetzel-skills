@@ -755,7 +755,7 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
         let tbl := tableOfRoot env.schema root
         -- a RIGHT/FULL item is read whole (its unmatched rows are found after the join); so is a WITHOUT ROWID table
         let acc := match tbl with
-          | some t => if right || t.withoutRowid then .full else chooseAccess t (env.schema.indexesOf t.name) base conds
+          | some t => if right || t.withoutRowid then .full else chooseAccess t (env.schema.indexesOfTable t) base conds
           | none => .full
         .table root n ipk rc dv base acc left right layout (leftOn.getD j #[])
       | .sub q n base left right _ => .sub q n base left right (leftOn.getD j #[])

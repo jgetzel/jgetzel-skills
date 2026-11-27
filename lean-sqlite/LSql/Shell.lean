@@ -17,7 +17,7 @@ structure St where
 
 /-- Control bytes other than tab and newline as `^X`, as the shell prints them. -/
 def escapeCtrl (b : ByteArray) : ByteArray :=
-  if b.data.all (fun c => c ≥ 32 || c == 9 || c == 10) then b else
+  if b.foldl (fun ok c => ok && (c ≥ 32 || c == 9 || c == 10)) true then b else
   b.foldl (fun acc c => if c < 32 && c != 9 && c != 10 then (acc.push 94).push (c + 64) else acc.push c) ByteArray.empty
 
 /-- A value as list mode prints it. -/
@@ -28,7 +28,7 @@ def render (nullValue : String) : Value → ByteArray
   | .text s =>
     let b := s.toUTF8
     -- text is printed as a C string: it ends at a NUL
-    let b := match b.data.findIdx? (· == 0) with | some k => b.extract 0 k | none => b
+    let b := match b.findIdx? (· == 0) with | some k => b.extract 0 k | none => b
     escapeCtrl b
   | .blob b => escapeCtrl b
 
@@ -327,14 +327,17 @@ def runInput (out err : IO.FS.Stream) (st : St) (input : String) : Nat → IO St
   -- the lines of the input, as splitOn "\n" gives them (one more than there are newlines)
   for _ in [0:total + 2] do
     if !more then break
+    let start := pos
     let e := Lex.lineEnd input pos
-    let l := Lex.sub input pos e
     more := e < total
+    -- the line with its newline, which a last line lacks
+    let nl := if more then Lex.sub input start (e + 1) else Lex.sub input start e ++ "\n"
     pos := e + 1
     n := n + 1
     if st.quit then break
     if st.bail && st.failed then break
-    if buf.isEmpty && Lex.byteAt l (Lex.scanWhile (fun c => c == 32 || c == 9 || c == 13) l 0) == 46 then
+    if buf.isEmpty && Lex.byteAt input (Lex.scanWhile (fun c => c == 32 || c == 9 || c == 13) input start) == 46 then
+      let l := Lex.sub input start e
       if st.echo then out.putStrLn l
       let w := dotArgs l
       if w.headD "" == ".read" then
@@ -348,9 +351,9 @@ def runInput (out err : IO.FS.Stream) (st : St) (input : String) : Nat → IO St
       continue
     if buf.isEmpty then
       -- a line of only whitespace and comments starts no statement
-      if (Lex.lexTok l 0).kind == .eof && !(Lex.openComment l 0 (l.utf8ByteSize + 1)) then continue
+      if Lex.onlyTrivia nl then continue
       bufLine := n
-    buf := buf ++ l ++ "\n"
+    buf := if buf.isEmpty then nl else buf ++ nl
     if Parse.isComplete buf then
       if st.echo then out.putStr buf
       st ← runSql out err st buf bufLine

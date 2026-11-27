@@ -1924,12 +1924,12 @@ def parseStmt : P Stmt := do
     return .reindex
   | _ => synErr
 
-/-- First token that is not a ';' at or after pos. -/
+/-- The token after the `;`s at or after pos. -/
 def skipSemis (src : String) (pos : Nat) : Nat → Token
   | 0 => lexTok src pos
   | f + 1 =>
-    let t := lexTok src pos
-    if t.kind == .semi then skipSemis src t.e f else t
+    let i := skipTrivia src pos (src.utf8ByteSize + 1)
+    if byteAt src i == 59 then skipSemis src (i + 1) f else lexAt src i
 
 /-- Parses the first statement of `src` from byte offset `pos`: skips whitespace, comments and empty statements (`;`); `none` when
 nothing else is left. On success: the statement and the byte offset just after its terminating `;` (or the end of input). -/

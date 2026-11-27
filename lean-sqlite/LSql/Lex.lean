@@ -154,7 +154,45 @@ inductive TK where
   | kWINDOW
   | kWITH
   | kWITHOUT
-  deriving DecidableEq, Repr, Inhabited, BEq
+  deriving DecidableEq, Repr, Inhabited
+
+/-- The kind's constructor index. Written out so that an inlined `k == .semi` is a compare of a byte against a constant
+(`ctorIdx` is a call that builds a `Nat`). -/
+@[inline] def TK.idx : TK → UInt8
+  | .eof => 0 | .illegal => 1 | .id => 2 | .qid => 3 | .dqid => 4 | .str => 5
+  | .blob => 6 | .int => 7 | .real => 8 | .hex => 9 | .param => 10 | .semi => 11
+  | .comma => 12 | .lp => 13 | .rp => 14 | .dot => 15 | .star => 16 | .slash => 17
+  | .rem => 18 | .plus => 19 | .minus => 20 | .concat => 21 | .bitand => 22 | .bitor => 23
+  | .shl => 24 | .shr => 25 | .lt => 26 | .le => 27 | .gt => 28 | .ge => 29
+  | .eq => 30 | .ne => 31 | .bitnot => 32 | .ptr => 33 | .ptr2 => 34 | .kABORT => 35
+  | .kACTION => 36 | .kADD => 37 | .kAFTER => 38 | .kALL => 39 | .kALTER => 40 | .kALWAYS => 41
+  | .kANALYZE => 42 | .kAND => 43 | .kAS => 44 | .kASC => 45 | .kATTACH => 46 | .kAUTOINCREMENT => 47
+  | .kBEFORE => 48 | .kBEGIN => 49 | .kBETWEEN => 50 | .kBY => 51 | .kCASCADE => 52 | .kCASE => 53
+  | .kCAST => 54 | .kCHECK => 55 | .kCOLLATE => 56 | .kCOLUMN => 57 | .kCOMMIT => 58 | .kCONFLICT => 59
+  | .kCONSTRAINT => 60 | .kCREATE => 61 | .kCROSS => 62 | .kCURRENT => 63 | .kCURRENT_DATE => 64 | .kCURRENT_TIME => 65
+  | .kCURRENT_TIMESTAMP => 66 | .kDATABASE => 67 | .kDEFAULT => 68 | .kDEFERRED => 69 | .kDEFERRABLE => 70 | .kDELETE => 71
+  | .kDESC => 72 | .kDETACH => 73 | .kDISTINCT => 74 | .kDO => 75 | .kDROP => 76 | .kEND => 77
+  | .kEACH => 78 | .kELSE => 79 | .kESCAPE => 80 | .kEXCEPT => 81 | .kEXCLUSIVE => 82 | .kEXCLUDE => 83
+  | .kEXISTS => 84 | .kEXPLAIN => 85 | .kFAIL => 86 | .kFILTER => 87 | .kFIRST => 88 | .kFOLLOWING => 89
+  | .kFOR => 90 | .kFOREIGN => 91 | .kFROM => 92 | .kFULL => 93 | .kGENERATED => 94 | .kGLOB => 95
+  | .kGROUP => 96 | .kGROUPS => 97 | .kHAVING => 98 | .kIF => 99 | .kIGNORE => 100 | .kIMMEDIATE => 101
+  | .kIN => 102 | .kINDEX => 103 | .kINDEXED => 104 | .kINITIALLY => 105 | .kINNER => 106 | .kINSERT => 107
+  | .kINSTEAD => 108 | .kINTERSECT => 109 | .kINTO => 110 | .kIS => 111 | .kISNULL => 112 | .kJOIN => 113
+  | .kKEY => 114 | .kLAST => 115 | .kLEFT => 116 | .kLIKE => 117 | .kLIMIT => 118 | .kMATCH => 119
+  | .kMATERIALIZED => 120 | .kNATURAL => 121 | .kNO => 122 | .kNOT => 123 | .kNOTHING => 124 | .kNOTNULL => 125
+  | .kNULL => 126 | .kNULLS => 127 | .kOF => 128 | .kOFFSET => 129 | .kON => 130 | .kOR => 131
+  | .kORDER => 132 | .kOTHERS => 133 | .kOUTER => 134 | .kOVER => 135 | .kPARTITION => 136 | .kPLAN => 137
+  | .kPRAGMA => 138 | .kPRECEDING => 139 | .kPRIMARY => 140 | .kQUERY => 141 | .kRAISE => 142 | .kRANGE => 143
+  | .kRECURSIVE => 144 | .kREFERENCES => 145 | .kREGEXP => 146 | .kREINDEX => 147 | .kRELEASE => 148 | .kRENAME => 149
+  | .kREPLACE => 150 | .kRESTRICT => 151 | .kRETURNING => 152 | .kRIGHT => 153 | .kROLLBACK => 154 | .kROW => 155
+  | .kROWS => 156 | .kSAVEPOINT => 157 | .kSELECT => 158 | .kSET => 159 | .kTABLE => 160 | .kTEMP => 161
+  | .kTHEN => 162 | .kTIES => 163 | .kTO => 164 | .kTRANSACTION => 165 | .kTRIGGER => 166 | .kUNBOUNDED => 167
+  | .kUNION => 168 | .kUNIQUE => 169 | .kUPDATE => 170 | .kUSING => 171 | .kVACUUM => 172 | .kVALUES => 173
+  | .kVIEW => 174 | .kVIRTUAL => 175 | .kWHEN => 176 | .kWHERE => 177 | .kWINDOW => 178 | .kWITH => 179
+  | .kWITHOUT => 180
+
+/-- Kinds are equal when their indexes are. -/
+@[inline] instance : BEq TK := ⟨fun a b => a.idx == b.idx⟩
 
 /-- Keywords that parse.y's `%fallback ID` lets stand for an identifier (and INDEXED, which is in the `id` token class). -/
 def TK.isFallback : TK → Bool
@@ -274,15 +312,20 @@ termination_by s.utf8ByteSize - i
 
 def lineEnd (s : String) (i : Nat) : Nat := scanWhile (fun c => c != 10) s i
 
-/-- End of a block comment whose pair of bytes (i-1, i) is examined next; none when unterminated. -/
-def blockEnd? (s : String) (i : Nat) : Option Nat :=
+/-- End of a block comment whose pair of bytes (i-1, i) is examined next; the end of input when unterminated (sqlite treats
+it as a comment to the end). -/
+def blockEnd (s : String) (i : Nat) : Nat :=
   if h : i < s.utf8ByteSize then
-    if byteAt s i == 47 && byteAt s (i - 1) == 42 then some (i + 1) else blockEnd? s (i + 1)
-  else none
+    if byteAt s i == 47 && byteAt s (i - 1) == 42 then i + 1 else blockEnd s (i + 1)
+  else s.utf8ByteSize
 termination_by s.utf8ByteSize - i
 
-/-- As blockEnd?, the end of input when unterminated (sqlite treats it as a comment to the end). -/
-def blockEnd (s : String) (i : Nat) : Nat := (blockEnd? s i).getD s.utf8ByteSize
+/-- True when a block comment whose pair of bytes (i-1, i) is examined next ends before the end of the text. -/
+def blockClosed (s : String) (i : Nat) : Bool :=
+  if h : i < s.utf8ByteSize then
+    if byteAt s i == 47 && byteAt s (i - 1) == 42 then true else blockClosed s (i + 1)
+  else false
+termination_by s.utf8ByteSize - i
 
 /-- True when the trivia (whitespace, comments) starting at i ends in an unterminated block comment. -/
 def openComment (s : String) (i : Nat) : Nat → Bool
@@ -292,20 +335,28 @@ def openComment (s : String) (i : Nat) : Nat → Bool
     if isSpace c then openComment s (i + 1) fuel
     else if c == 45 && byteAt s (i + 1) == 45 then openComment s (lineEnd s (i + 2)) fuel
     else if c == 47 && byteAt s (i + 1) == 42 then
-      match blockEnd? s (i + 3) with
-      | some e => openComment s e fuel
-      | none => true
+      if blockClosed s (i + 3) then openComment s (blockEnd s (i + 3)) fuel else true
     else false
 
 /-- Skips whitespace and comments. -/
-def skipTrivia (s : String) (i : Nat) : Nat → Nat
+def skipTriviaGo (s : String) (i : Nat) : Nat → Nat
   | 0 => i
   | fuel + 1 =>
     let c := byteAt s i
-    if isSpace c then skipTrivia s (i + 1) fuel
-    else if c == 45 && byteAt s (i + 1) == 45 then skipTrivia s (lineEnd s (i + 2)) fuel
-    else if c == 47 && byteAt s (i + 1) == 42 then skipTrivia s (blockEnd s (i + 3)) fuel
+    if isSpace c then skipTriviaGo s (i + 1) fuel
+    else if c == 45 && byteAt s (i + 1) == 45 then skipTriviaGo s (lineEnd s (i + 2)) fuel
+    else if c == 47 && byteAt s (i + 1) == 42 then skipTriviaGo s (blockEnd s (i + 3)) fuel
     else i
+
+/-- Skips whitespace and comments: most tokens are not followed by any, so a byte that starts none returns at once. -/
+@[inline] def skipTrivia (s : String) (i : Nat) (fuel : Nat) : Nat :=
+  let c := byteAt s i
+  if isSpace c || c == 45 || c == 47 then skipTriviaGo s i fuel else i
+
+/-- True when the text is only whitespace and comments, none left open. -/
+def onlyTrivia (s : String) : Bool :=
+  let n := s.utf8ByteSize
+  skipTrivia s 0 (n + 1) >= n && !openComment s 0 (n + 1)
 
 /-- Upper-cases an ASCII letter. -/
 @[inline] def up (c : UInt8) : UInt8 := if c >= 97 && c <= 122 then c - 32 else c
@@ -553,6 +604,25 @@ def lexNumber (s : String) (i : Nat) : Token :=
   else if !(sepsOk (kind == .hex) s i j) then ⟨.illegal, i, j⟩
   else ⟨kind, i, j⟩
 
+/-- The end of the number token `lexNumber` lexes at i, without building the token. -/
+def numberEnd (s : String) (i : Nat) : Nat :=
+  let j0 := scanWhile isDigit s i
+  let c := byteAt s j0
+  if j0 > i && !isIdChar c && c != 46 then j0 else
+  let c1 := byteAt s (i + 1)
+  let j : Nat :=
+    if byteAt s i == 48 && (c1 ||| 32) == 120 && isXDigit (byteAt s (i + 2)) then
+      scanWhile (fun c => isXDigit c || c == 95) s (i + 3)
+    else
+      let j := scanWhile (fun c => isDigit c || c == 95) s i
+      let j := if byteAt s j == 46 then scanWhile (fun c => isDigit c || c == 95) s (j + 1) else j
+      let e := byteAt s j
+      let d1 := byteAt s (j + 1)
+      if (e ||| 32) == 101 && (isDigit d1 || ((d1 == 43 || d1 == 45) && isDigit (byteAt s (j + 2)))) then
+        scanWhile (fun c => isDigit c || c == 95) s (j + 2)
+      else j
+  scanWhile isIdChar s j
+
 /-- Lexes the token that starts at i (no whitespace skipping); `kw` classifies the word at [i, j). -/
 @[specialize] def lexAtG (kw : String → Nat → Nat → TK) (s : String) (i : Nat) : Token :=
   let n := s.utf8ByteSize
@@ -613,13 +683,9 @@ def lexAt (s : String) (i : Nat) : Token := lexAtG kwLookup s i
 def lexTok (s : String) (i : Nat) : Token :=
   lexAt s (skipTrivia s i (s.utf8ByteSize + 1))
 
-/-- As lexTok, but only the keywords sqlite3_complete cares about are told from plain words. -/
-def lexTokC (s : String) (i : Nat) : Token :=
-  lexAtG kwClass s (skipTrivia s i (s.utf8ByteSize + 1))
-
 /-- sqlite3_complete's state machine (complete.c): the shell's line_is_complete. States: 0 nothing seen, 1 start of a statement
 (the only complete one), 2 normal, 3 EXPLAIN, 4 CREATE [TEMP], 5 inside a CREATE TRIGGER, 6 saw `;` in a trigger, 7 saw `; END`. -/
-def completeStep (state : Nat) (k : TK) : Nat :=
+@[inline] def completeStep (state : Nat) (k : TK) : Nat :=
   -- token classes: 0 ';', 1 other, 2 EXPLAIN, 3 CREATE, 4 TEMP, 5 TRIGGER, 6 END
   let c : Nat := match k with
     | .semi => 0
@@ -638,18 +704,64 @@ def completeStep (state : Nat) (k : TK) : Nat :=
   | 6 => if c == 0 then 6 else if c == 6 then 7 else 5
   | _ => if c == 0 then 1 else 5
 
+/-- Index after the quoted run starting at i (byte q at i), as `quotedEnd`; `dflt` when unterminated. -/
+def quotedEndOr (s : String) (q : UInt8) (dflt : Nat) (i : Nat) : Nat :=
+  go (i + 1)
+where
+  go (j : Nat) : Nat :=
+    if h : j < s.utf8ByteSize then
+      if byteAt s j == q then
+        if byteAt s (j + 1) == q then go (j + 2) else j + 1
+      else go (j + 1)
+    else dflt
+  termination_by s.utf8ByteSize - j
+
+/-- Index after the token that starts at i (byte c) and is not a word, a `;` or a quoted name's keyword: where `lexAt` ends it,
+except that an operator is cut to one byte (its pair, `||` or `->>`, is no different to `isComplete`). An unterminated quote
+or bracket runs to the end of the text. -/
+def otherEnd (s : String) (c : UInt8) (i : Nat) : Nat :=
+  let n := s.utf8ByteSize
+  let c1 := byteAt s (i + 1)
+  match c with
+  | 39 | 34 | 96 => quotedEndOr s c n i
+  | 91 =>
+    let j := scanWhile (fun c => c != 93) s (i + 1)
+    if j < n then j + 1 else n
+  | 63 => scanWhile isDigit s (i + 1)
+  | 58 | 64 | 36 => scanWhile isIdChar s (i + 1)
+  | 46 => if isDigit c1 then numberEnd s i else i + 1
+  | _ =>
+    if isDigit c then
+      let j0 := scanWhile isDigit s i
+      let d := byteAt s j0
+      if !isIdChar d && d != 46 then j0 else numberEnd s i
+    else if (c ||| 32) == 120 && c1 == 39 then
+      let j := scanWhile isXDigit s (i + 2)
+      if byteAt s j == 39 && (j - i) % 2 == 0 then j + 1
+      else
+        let j2 := scanWhile (fun c => c != 39) s j
+        if j2 < n then j2 + 1 else n
+    else i + 1
+
 /-- The shell's line_is_complete (sqlite3_complete): the text ends a statement with `;`, a CREATE TRIGGER with `; END;`, and no
-comment or quoted name is left open. -/
+comment or quoted name is left open. It scans the bytes and builds no token: only `;`, the five keywords of `completeStep` and
+the extent of each other token matter. -/
 def isComplete (src : String) : Bool :=
   go 0 0 (src.utf8ByteSize + 1)
 where
   go (i : Nat) (state : Nat) : Nat → Bool
     | 0 => state == 1
     | f + 1 =>
-      let t := lexTokC src i
-      match t.kind with
-      | .eof => state == 1 && !openComment src i (src.utf8ByteSize + 1)
-      | k => go t.e (completeStep state k) f
+      let n := src.utf8ByteSize
+      let j := skipTrivia src i (n + 1)
+      if j >= n then state == 1 && !openComment src i (n + 1)
+      else
+        let c := byteAt src j
+        if c == 59 then go (j + 1) (completeStep state .semi) f
+        else if isIdStart c && !((c ||| 32) == 120 && byteAt src (j + 1) == 39) then
+          let e := scanWhile isIdChar src (j + 1)
+          go e (completeStep state (kwClass src j e)) f
+        else go (otherEnd src c j) (completeStep state .id) f
 
 
 /-! Every keyword is read back from its text, in either case; the shell's complete-statement scan sees the same five. -/
