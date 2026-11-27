@@ -194,7 +194,7 @@ def asConstraint (c : CExpr) : Option (Nat × BinOp × CExpr × Aff × Collation
 
 /-- Chooses how to find a table's rows from the conjuncts that constrain it. `bound`: an expression is usable when it
 reads only slots below the table's. -/
-def chooseAccess (t : Table) (idxs : Array Index) (base : Nat) (conds : Array CExpr) : Access :=
+def chooseAccess (t : Table) (idxs : Array Index) (base : Nat) (conds : Array CExpr) : Access CExpr :=
   let rowidSlot := base + t.cols.size
   let isRowid (s : Nat) : Bool := s == rowidSlot || (t.ipk.map (base + ·) == some s)
   let usable (e : CExpr) : Bool := let (ss, corr) := slotsOf e 64; !corr && ss.all (· < base)
@@ -238,7 +238,7 @@ def chooseAccess (t : Table) (idxs : Array Index) (base : Nat) (conds : Array CE
     if eqs.isEmpty && lo.isNone && hi.isNone then none
     else some (eqs.size * 4 + (if ix.unique && eqs.size == ix.cols.size then 2 else 0) + (if lo.isSome || hi.isSome then 1 else 0),
                Access.index ix.root ix.keyInfo eqs lo hi)
-  let best := idxPlans.foldl (fun (b : Option (Nat × Access)) (sc, a) => match b with
+  let best := idxPlans.foldl (fun (b : Option (Nat × Access CExpr)) (sc, a) => match b with
     | some (bs, _) => if sc > bs then some (sc, a) else b
     | none => some (sc, a)) none
   match best with
@@ -248,7 +248,7 @@ def chooseAccess (t : Table) (idxs : Array Index) (base : Nat) (conds : Array CE
     | none => a
   | none => (rowidRange cons isRowid).getD .full
 where
-  rowidRange (cons : Array (Nat × BinOp × CExpr × Aff × Collation)) (isRowid : Nat → Bool) : Option Access :=
+  rowidRange (cons : Array (Nat × BinOp × CExpr × Aff × Collation)) (isRowid : Nat → Bool) : Option (Access CExpr) :=
     let lo := cons.findSome? fun (s, op, e, _, _) => if isRowid s && (op == .gt || op == .ge) then some (e, op == .ge) else none
     let hi := cons.findSome? fun (s, op, e, _, _) => if isRowid s && (op == .lt || op == .le) then some (e, op == .le) else none
     if lo.isNone && hi.isNone then none else some (.rowidRange lo hi)

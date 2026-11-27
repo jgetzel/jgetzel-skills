@@ -2,8 +2,8 @@ import LSql.Compile
 import LSql.BTree
 import LSql.DateTime
 import LSql.Json
-/-! Running compiled SELECTs (sqlite's VDBE role, as a tree-walking interpreter over immutable state): expression
-evaluation, the nested-loop join, aggregation, compound operators, ORDER BY and LIMIT. -/
+/-! Running compiled SELECTs (sqlite's VDBE role, over immutable state): expressions compiled once per query to
+closures, the nested-loop join, aggregation, compound operators, ORDER BY and LIMIT. -/
 namespace LSql
 
 abbrev Row := Array Value
@@ -32,6 +32,10 @@ namespace Env
 @[inline] def col (env : Env) (d s : Nat) : Value :=
   if d < env.frames.size then (env.frames.getD (env.frames.size - 1 - d) #[]).getD s .null else .null
 @[inline] def push (env : Env) (r : Row) : Env := { env with frames := env.frames.push r }
+/-- The current row's frame. -/
+@[inline] def top (env : Env) : Row := env.frames.getD (env.frames.size - 1) #[]
+/-- The environment with its current row's frame changed by `f` (in place when neither is shared). -/
+@[inline] def modifyTop (env : Env) (f : Row → Row) : Env := { env with frames := env.frames.modify (env.frames.size - 1) f }
 end Env
 
 @[inline] def boolV (b : Bool) : Value := .int (if b then 1 else 0)
@@ -124,115 +128,148 @@ def seedOf (env : Env) (site : Int64) : UInt64 :=
   let h := row.foldl (fun (h : UInt64) v => splitmix (h ^^^ hash v.toText ^^^ (v.typeName.length.toUInt64 <<< (56 : UInt64)))) 0
   splitmix ((env.nowMs.getD 0).toUInt64 ^^^ splitmix site.toUInt64 ^^^ h)
 
+/-! ## Compiled expressions
+
+A core's expressions are compiled once per run into closures (the role of sqlite's VDBE program): operators, affinities,
+collations and functions are decided once, literals converted once, and each row runs the closures. -/
+
+/-- A compiled computation over an environment: a value (`CFn`), a truth value (`CTruth`, NULL as none), whether a
+condition holds (`CPred`), or a value with whether it carries sqlite's JSON subtype (`CFnJ`). -/
+structure Compiled (α : Type) where
+  run : Env → EM α
+
+abbrev CFn := Compiled Value
+abbrev CTruth := Compiled (Option Bool)
+abbrev CPred := Compiled Bool
+abbrev CFnJ := Compiled (Value × Bool)
+
+instance [Inhabited α] : Inhabited (Compiled α) := ⟨⟨fun _ => .ok default⟩⟩
+
+/-- How compiled code runs a subquery. -/
+abbrev SubRun := Env → CSel → EM (Array Row)
+
+/-- A scalar function, resolved from its name once per call site. -/
+structure ScalarFn where
+  call : Env → Array Value → EM Value
+
+/-- A scalar function's body given its first three arguments (NULL past the end) and whether any argument is NULL. -/
+@[inline] def ScalarFn.of (f : Env → Array Value → Value → Value → Value → Bool → EM Value) : ScalarFn :=
+  ⟨fun env a => f env a (a.getD 0 .null) (a.getD 1 .null) (a.getD 2 .null) (a.any (·.isNull))⟩
+
+set_option linter.unusedVariables false in
 /-- The scalar functions (func.c). -/
-def evalFn (env : Env) (name : String) (a : Array Value) : EM Value :=
-  if name == jsonValueTag then .ok (a.getD 0 .null) else
-  if DateTime.isDateFn name then DateTime.call name a env.nowMs else
-  let x := a.getD 0 .null
-  let y := a.getD 1 .null
-  let z := a.getD 2 .null
-  let anyNull := a.any (·.isNull)
+def fnOf (name : String) : ScalarFn :=
+  if name == jsonValueTag then ⟨fun _ a => .ok (a.getD 0 .null)⟩ else
+  if DateTime.isDateFn name then ⟨fun env a => DateTime.call name a env.nowMs⟩ else
   match name with
-  | "ABS" => absV x
-  | "LENGTH" => .ok (match x with
+  | "ABS" => .of fun env a x y z anyNull => absV x
+  | "LENGTH" => .of fun env a x y z anyNull => .ok (match x with
     | .null => .null
     | .blob b => .int b.size.toInt64
     | v => .int (v.toText.takeWhile (· != '\x00')).positions.length.toInt64)
-  | "OCTET_LENGTH" => .ok (match x with | .null => .null | v => .int v.toBytes.size.toInt64)
-  | "LOWER" => .ok (match x with | .null => .null | v => .text (lowerAscii v.toText))
-  | "UPPER" => .ok (match x with | .null => .null | v => .text (upperAscii v.toText))
-  | "TYPEOF" => .ok (.text x.typeName)
-  | "HEX" => .ok (.text (hexOf x.toBytes))
-  | "QUOTE" => .ok (.text (quoteV x))
-  | "UNICODE" => .ok (unicodeV x)
-  | "CHAR" => .ok (charV a)
-  | "COALESCE" => .ok ((a.find? (!·.isNull)).getD .null)
-  | "IFNULL" => .ok (if x.isNull then y else x)
-  | "NULLIF" => .ok (if !x.isNull && !y.isNull && cmpValues .binary x y == .eq then .null else x)
-  | "IIF" | "IF" => .ok (if x.truth? == some true then y else z)
-  | "INSTR" => .ok (instrV x y)
-  | "SUBSTR" | "SUBSTRING" =>
+  | "OCTET_LENGTH" => .of fun env a x y z anyNull => .ok (match x with | .null => .null | v => .int v.toBytes.size.toInt64)
+  | "LOWER" => .of fun env a x y z anyNull => .ok (match x with | .null => .null | v => .text (lowerAscii v.toText))
+  | "UPPER" => .of fun env a x y z anyNull => .ok (match x with | .null => .null | v => .text (upperAscii v.toText))
+  | "TYPEOF" => .of fun env a x y z anyNull => .ok (.text x.typeName)
+  | "HEX" => .of fun env a x y z anyNull => .ok (.text (hexOf x.toBytes))
+  | "QUOTE" => .of fun env a x y z anyNull => .ok (.text (quoteV x))
+  | "UNICODE" => .of fun env a x y z anyNull => .ok (unicodeV x)
+  | "CHAR" => .of fun env a x y z anyNull => .ok (charV a)
+  | "COALESCE" => .of fun env a x y z anyNull => .ok ((a.find? (!·.isNull)).getD .null)
+  | "IFNULL" => .of fun env a x y z anyNull => .ok (if x.isNull then y else x)
+  | "NULLIF" => .of fun env a x y z anyNull => .ok (if !x.isNull && !y.isNull && cmpValues .binary x y == .eq then .null else x)
+  | "IIF" | "IF" => .of fun env a x y z anyNull => .ok (if x.truth? == some true then y else z)
+  | "INSTR" => .of fun env a x y z anyNull => .ok (instrV x y)
+  | "SUBSTR" | "SUBSTRING" => .of fun env a x y z anyNull =>
     .ok (if x.isNull || y.isNull || (a.size > 2 && z.isNull) then .null
       else substrV x (Num.castToInt y) (if a.size > 2 then some (Num.castToInt z) else none))
-  | "REPLACE" =>
+  | "REPLACE" => .of fun env a x y z anyNull =>
     .ok (if anyNull then .null else
       let s := x.toText
       let f := y.toText
       if f.isEmpty then .text s else .text (s.replace f z.toText))
-  | "TRIM" | "LTRIM" | "RTRIM" =>
+  | "TRIM" | "LTRIM" | "RTRIM" => .of fun env a x y z anyNull =>
     .ok (if x.isNull || (a.size > 1 && y.isNull) then .null else
       let cs := if a.size > 1 then y.toText.toList else [' ']
       .text (trimChars x.toText cs (name != "RTRIM") (name != "LTRIM")))
-  | "ROUND" => .ok (roundV x a[1]?)
-  | "MIN" | "MAX" =>
+  | "ROUND" => .of fun env a x y z anyNull => .ok (roundV x a[1]?)
+  | "MIN" | "MAX" => .of fun env a x y z anyNull =>
     .ok (if anyNull then .null else
       a.foldl (fun (best : Value) v =>
         let o := cmpValues .binary v best
         if (name == "MIN" && o == .lt) || (name == "MAX" && o == .gt) then v else best) x)
-  | "LIKE" =>
+  | "LIKE" => .of fun env a x y z anyNull =>
     if x.isNull || y.isNull || (a.size > 2 && z.isNull) then .ok .null else
     let esc := if a.size > 2 then (z.toBytes)[0]? else none
     .ok (boolV (likeMatch x.toBytes y.toBytes esc))
-  | "GLOB" => .ok (if anyNull then .null else boolV (globMatch x.toBytes y.toBytes))
-  | "PRINTF" | "FORMAT" => .ok (if x.isNull then .null else .text (Num.printf x.toText (a.toList.drop 1)))
-  | "CONCAT" => .ok (.text (a.foldl (fun s v => if v.isNull then s else s ++ v.toText) ""))
-  | "CONCAT_WS" =>
+  | "GLOB" => .of fun env a x y z anyNull => .ok (if anyNull then .null else boolV (globMatch x.toBytes y.toBytes))
+  | "PRINTF" | "FORMAT" => .of fun env a x y z anyNull => .ok (if x.isNull then .null else .text (Num.printf x.toText (a.toList.drop 1)))
+  | "CONCAT" => .of fun env a x y z anyNull => .ok (.text (a.foldl (fun s v => if v.isNull then s else s ++ v.toText) ""))
+  | "CONCAT_WS" => .of fun env a x y z anyNull =>
     .ok (if x.isNull then .null else
       let parts := (a.toList.drop 1).filter (!·.isNull) |>.map (·.toText)
       .text (x.toText.intercalate parts))
-  | "LAST_INSERT_ROWID" => .ok (.int env.lastRowid)
-  | "CHANGES" => .ok (.int env.changes)
-  | "TOTAL_CHANGES" => .ok (.int env.totalChanges)
-  | "SQLITE_VERSION" => .ok (.text "3.54.0")
-  | "SQLITE_SOURCE_ID" => .ok (.text "lean-sqlite")
-  | "SIGN" => .ok (signV x)
-  | "SQRT" => .ok (math1 (fun f => if f < 0 then 0.0/0.0 else f.sqrt) x)
-  | "EXP" => .ok (math1 Float.exp x)
-  | "LN" => .ok (math1 (fun f => if f ≤ 0 then 0.0/0.0 else f.log) x)
-  | "LOG10" => .ok (math1 (fun f => if f ≤ 0 then 0.0/0.0 else f.log10) x)
-  | "LOG2" => .ok (math1 (fun f => if f ≤ 0 then 0.0/0.0 else f.log2) x)
-  | "LOG" =>
+  | "LAST_INSERT_ROWID" => .of fun env a x y z anyNull => .ok (.int env.lastRowid)
+  | "CHANGES" => .of fun env a x y z anyNull => .ok (.int env.changes)
+  | "TOTAL_CHANGES" => .of fun env a x y z anyNull => .ok (.int env.totalChanges)
+  | "SQLITE_VERSION" => .of fun env a x y z anyNull => .ok (.text "3.54.0")
+  | "SQLITE_SOURCE_ID" => .of fun env a x y z anyNull => .ok (.text "lean-sqlite")
+  | "SIGN" => .of fun env a x y z anyNull => .ok (signV x)
+  | "SQRT" => .of fun env a x y z anyNull => .ok (math1 (fun f => if f < 0 then 0.0/0.0 else f.sqrt) x)
+  | "EXP" => .of fun env a x y z anyNull => .ok (math1 Float.exp x)
+  | "LN" => .of fun env a x y z anyNull => .ok (math1 (fun f => if f ≤ 0 then 0.0/0.0 else f.log) x)
+  | "LOG10" => .of fun env a x y z anyNull => .ok (math1 (fun f => if f ≤ 0 then 0.0/0.0 else f.log10) x)
+  | "LOG2" => .of fun env a x y z anyNull => .ok (math1 (fun f => if f ≤ 0 then 0.0/0.0 else f.log2) x)
+  | "LOG" => .of fun env a x y z anyNull =>
     if a.size == 1 then .ok (math1 (fun f => if f ≤ 0 then 0.0/0.0 else f.log10) x) else
     match numOf x, numOf y with
     | .null, _ | _, .null => .ok .null
     | b, v => let b := toF b; let v := toF v
       .ok (if b ≤ 0 || b == 1 || v ≤ 0 then .null else realV (v.log / b.log))
-  | "CEIL" | "CEILING" => .ok (intRound Float.ceil x)
-  | "FLOOR" => .ok (intRound Float.floor x)
-  | "TRUNC" => .ok (intRound (fun f => if f ≥ 0 then f.floor else f.ceil) x)
-  | "SIN" => .ok (math1 Float.sin x) | "COS" => .ok (math1 Float.cos x) | "TAN" => .ok (math1 Float.tan x)
-  | "ASIN" => .ok (math1 Float.asin x) | "ACOS" => .ok (math1 Float.acos x) | "ATAN" => .ok (math1 Float.atan x)
-  | "SINH" => .ok (math1 Float.sinh x) | "COSH" => .ok (math1 Float.cosh x) | "TANH" => .ok (math1 Float.tanh x)
-  | "ASINH" => .ok (math1 Float.asinh x) | "ACOSH" => .ok (math1 Float.acosh x) | "ATANH" => .ok (math1 Float.atanh x)
-  | "DEGREES" => .ok (math1 (fun f => f * 180.0 / 3.141592653589793) x)
-  | "RADIANS" => .ok (math1 (fun f => f * 3.141592653589793 / 180.0) x)
-  | "PI" => .ok (.real 3.141592653589793)
-  | "POW" | "POWER" =>
+  | "CEIL" | "CEILING" => .of fun env a x y z anyNull => .ok (intRound Float.ceil x)
+  | "FLOOR" => .of fun env a x y z anyNull => .ok (intRound Float.floor x)
+  | "TRUNC" => .of fun env a x y z anyNull => .ok (intRound (fun f => if f ≥ 0 then f.floor else f.ceil) x)
+  | "SIN" => .of fun env a x y z anyNull => .ok (math1 Float.sin x)
+  | "COS" => .of fun env a x y z anyNull => .ok (math1 Float.cos x)
+  | "TAN" => .of fun env a x y z anyNull => .ok (math1 Float.tan x)
+  | "ASIN" => .of fun env a x y z anyNull => .ok (math1 Float.asin x)
+  | "ACOS" => .of fun env a x y z anyNull => .ok (math1 Float.acos x)
+  | "ATAN" => .of fun env a x y z anyNull => .ok (math1 Float.atan x)
+  | "SINH" => .of fun env a x y z anyNull => .ok (math1 Float.sinh x)
+  | "COSH" => .of fun env a x y z anyNull => .ok (math1 Float.cosh x)
+  | "TANH" => .of fun env a x y z anyNull => .ok (math1 Float.tanh x)
+  | "ASINH" => .of fun env a x y z anyNull => .ok (math1 Float.asinh x)
+  | "ACOSH" => .of fun env a x y z anyNull => .ok (math1 Float.acosh x)
+  | "ATANH" => .of fun env a x y z anyNull => .ok (math1 Float.atanh x)
+  | "DEGREES" => .of fun env a x y z anyNull => .ok (math1 (fun f => f * 180.0 / 3.141592653589793) x)
+  | "RADIANS" => .of fun env a x y z anyNull => .ok (math1 (fun f => f * 3.141592653589793 / 180.0) x)
+  | "PI" => .of fun env a x y z anyNull => .ok (.real 3.141592653589793)
+  | "POW" | "POWER" => .of fun env a x y z anyNull =>
     .ok (match numOf x, numOf y with | .null, _ | _, .null => .null | b, e => realV (Float.pow (toF b) (toF e)))
-  | "ATAN2" =>
+  | "ATAN2" => .of fun env a x y z anyNull =>
     .ok (match numOf x, numOf y with | .null, _ | _, .null => .null | b, e => realV (Float.atan2 (toF b) (toF e)))
-  | "MOD" =>
+  | "MOD" => .of fun env a x y z anyNull =>
     .ok (match numOf x, numOf y with
       | .null, _ | _, .null => .null
       | b, e => let d := toF e; if d == 0 then .null else
         let q := toF b / d
         let t := if q ≥ 0 then q.floor else q.ceil
         realV (toF b - t * d))
-  | "ZEROBLOB" => .ok (.blob (pushZeros ByteArray.empty (Num.castToInt x).toNatClampNeg))
-  | "UNHEX" => .ok (unhexV x)
-  | "LIKELY" | "UNLIKELY" | "LIKELIHOOD" => .ok x
-  | "SOUNDEX" => .ok (.text (soundex x))
-  | "RANDOM" =>
+  | "ZEROBLOB" => .of fun env a x y z anyNull => .ok (.blob (pushZeros ByteArray.empty (Num.castToInt x).toNatClampNeg))
+  | "UNHEX" => .of fun env a x y z anyNull => .ok (unhexV x)
+  | "LIKELY" | "UNLIKELY" | "LIKELIHOOD" => .of fun env a x y z anyNull => .ok x
+  | "SOUNDEX" => .of fun env a x y z anyNull => .ok (.text (soundex x))
+  | "RANDOM" => .of fun env a x y z anyNull =>
     -- a pseudo-random number: the statement's clock, the call site (its last argument) and the current row, mixed
     .ok (.int (splitmix (seedOf env (Num.castToInt (a.getD 0 .null)))).toInt64)
-  | "RANDOMBLOB" =>
+  | "RANDOMBLOB" => .of fun env a x y z anyNull =>
     let n := max 1 (Num.castToInt x).toNatClampNeg
     let s0 := seedOf env (Num.castToInt (a.getD 1 .null))
     let (b, _) := n.fold (fun _ _ (acc : ByteArray × UInt64) =>
       let s := splitmix acc.2
       (acc.1.push s.toUInt8, s)) (ByteArray.empty, s0)
     .ok (.blob b)
-  | _ => .error s!"no such function: {name}"
+  | _ => .of fun _ _ _ _ _ _ => .error s!"no such function: {name}"
 
 /-! ## Aggregates (func.c sumStep, countStep, minmaxStep, groupConcatStep) -/
 
@@ -329,13 +366,25 @@ def kbnInit (acc : AggAcc) (i : Int64) : AggAcc :=
     { acc with rsum := (i - sm).toFloat, rerr := sm.toFloat }
   else { acc with rsum := i.toFloat, rerr := 0 }
 
-def aggStep (name : String) (star : Bool) (coll : Collation) (acc : AggAcc) (args : Array Value) (at_ : Nat) : AggAcc :=
+/-- One row into an aggregate: its accumulator, the row's arguments and the row's position in its group. -/
+structure AggStepFn where
+  step : AggAcc → Array Value → Nat → AggAcc
+
+/-- min() and max(): `better` is the ordering of a new best value against the current one. -/
+def minMaxStep (better : Ordering) (coll : Collation) : AggStepFn := ⟨fun acc args at_ =>
   let x := args.getD 0 .null
-  if Json.isJsonAgg name then { acc with json := Json.aggStep name acc.json args (args.map fun _ => false) } else
-  if isPercentile name then percentStep name acc args else
+  if x.isNull then acc else
+  if !acc.any then { acc with best := x, bestAt := at_, any := true } else
+  if cmpValues coll x acc.best == better then { acc with best := x, bestAt := at_ } else acc⟩
+
+/-- The step of aggregate `name`, resolved once per aggregate. -/
+def aggStepOf (name : String) (star : Bool) (coll : Collation) : AggStepFn :=
+  if Json.isJsonAgg name then ⟨fun acc args _ => { acc with json := Json.aggStep name acc.json args (args.map fun _ => false) }⟩ else
+  if isPercentile name then ⟨fun acc args _ => percentStep name acc args⟩ else
   match name with
-  | "COUNT" => if star || !x.isNull then { acc with n := acc.n + 1 } else acc
-  | "SUM" | "TOTAL" | "AVG" =>
+  | "COUNT" => ⟨fun acc args _ => if star || !(args.getD 0 .null).isNull then { acc with n := acc.n + 1 } else acc⟩
+  | "SUM" | "TOTAL" | "AVG" => ⟨fun acc args _ =>
+    let x := args.getD 0 .null
     if x.isNull then acc else
     let acc := { acc with n := acc.n + 1 }
     let nt := match x with | .text _ | .blob _ => Value.applyAff .numeric x | v => v
@@ -349,16 +398,16 @@ def aggStep (name : String) (star : Bool) (coll : Collation) (acc : AggAcc) (arg
     | v =>
       let r := Num.castToReal v
       if !acc.approx then kbn { (kbnInit acc acc.isum) with approx := true } r
-      else kbn { acc with ovrfl := false } r
-  | "MIN" | "MAX" =>
-    if x.isNull then acc else
-    if !acc.any then { acc with best := x, bestAt := at_, any := true } else
-    let o := cmpValues coll x acc.best
-    if (name == "MIN" && o == .lt) || (name == "MAX" && o == .gt) then { acc with best := x, bestAt := at_ } else acc
-  | _ => -- GROUP_CONCAT, STRING_AGG
+      else kbn { acc with ovrfl := false } r⟩
+  | "MIN" | "MAX" => minMaxStep (if name == "MIN" then .lt else .gt) coll
+  | _ => ⟨fun acc args _ => -- GROUP_CONCAT, STRING_AGG
+    let x := args.getD 0 .null
     if x.isNull then acc else
     let sep := if args.size > 1 then (args.getD 1 .null).toText else ","
-    if acc.any then { acc with str := acc.str ++ sep ++ x.toText } else { acc with str := x.toText, any := true }
+    if acc.any then { acc with str := acc.str ++ sep ++ x.toText } else { acc with str := x.toText, any := true }⟩
+
+def aggStep (name : String) (star : Bool) (coll : Collation) (acc : AggAcc) (args : Array Value) (at_ : Nat) : AggAcc :=
+  (aggStepOf name star coll).step acc args at_
 
 def aggFinal (name : String) (acc : AggAcc) : EM Value :=
   if Json.isJsonAgg name then Json.aggFinal name acc.json else
@@ -685,116 +734,194 @@ def boundRowid (v : Value) (incl lower : Bool) : Option Int64 :=
     else some (if fl == f then (if incl then f.toInt64 else f.toInt64 - 1) else fl.toInt64)
   | _ => none
 
-mutual
-def eval (env : Env) : CExpr → Nat → EM Value
-  | _, 0 => .error "expression nested too deeply"
+/-- The orderings a comparison operator accepts: `a op b` holds when `cmpValues a b` is one of them. -/
+structure OrdSet where
+  lt : Bool
+  eq : Bool
+  gt : Bool
+
+def OrdSet.of : BinOp → OrdSet
+  | .eq => ⟨false, true, false⟩
+  | .ne => ⟨true, false, true⟩
+  | .lt => ⟨true, false, false⟩
+  | .le => ⟨true, true, false⟩
+  | .gt => ⟨false, false, true⟩
+  | .ge => ⟨false, true, true⟩
+  | _ => ⟨false, false, false⟩
+
+@[inline] def OrdSet.has (s : OrdSet) : Ordering → Bool
+  | .lt => s.lt
+  | .eq => s.eq
+  | .gt => s.gt
+
+/-- A comparison's truth on operands the comparison affinity was applied to (NULL when either is). -/
+@[inline] def cmpTruth (s : OrdSet) (coll : Collation) (x y : Value) : Option Bool :=
+  if x.isNull || y.isNull then none else some (s.has (cmpValues coll x y))
+
+/-- Whether a comparison holds on operands the comparison affinity was applied to (not when either is NULL). -/
+@[inline] def cmpHolds (s : OrdSet) (coll : Collation) (x y : Value) : Bool :=
+  !x.isNull && !y.isNull && s.has (cmpValues coll x y)
+
+/-- AND and OR of truth values. -/
+def andTruth : Option Bool → Option Bool → Option Bool
+  | _, some false | some false, _ => some false
+  | some true, some true => some true
+  | _, _ => none
+
+def orTruth : Option Bool → Option Bool → Option Bool
+  | _, some true | some true, _ => some true
+  | some false, some false => some false
+  | _, _ => none
+
+/-- A binary operator other than a comparison, AND or OR. -/
+def arithV (op : BinOp) (x y : Value) : Value :=
+  match op with
+  | .concat => concatV x y
+  | .bitAnd | .bitOr | .shl | .shr => bitop op x y
+  | _ => arith op x y
+
+def bitNotV (v : Value) : Value := match intOf v with | some i => .int (~~~i) | none => .null
+
+/-- Whether `v` equals one of the values in `vs` (true), none does but one is NULL (none), or none does (false). -/
+def inValues (aff : Aff) (coll : Collation) (v : Value) (vs : Array Value) : Option Bool :=
+  let (found, sawNull) := vs.foldl (fun (acc : Bool × Bool) w =>
+    if acc.1 then acc else if w.isNull then (false, true) else (isTrueV (compareV .eq aff coll v w), acc.2)) (false, false)
+  if found then some true else if sawNull then none else some false
+
+/-- Operator subtrees whose operands are all literals, replaced by their value (functions, aggregates, windows,
+subqueries and RAISE are left as they are). -/
+def foldConst : CExpr → Nat → CExpr
+  | e, 0 => e
   | e, fuel+1 => match e with
-  | .lit v => .ok v
-  | .col d s => .ok (env.col d s)
-  | .arith op a b => do
-    let x ← eval env a fuel
-    let y ← eval env b fuel
-    return match op with
-      | .concat => concatV x y
-      | .bitAnd | .bitOr | .shl | .shr => bitop op x y
-      | _ => arith op x y
-  | .cmp op a b aff coll => do
-    let x ← eval env a fuel
-    let y ← eval env b fuel
-    return compareV op aff coll x y
-  | .and a b => do
-    let x := (← eval env a fuel).truth?
-    if x == some false then return boolV false
-    let y := (← eval env b fuel).truth?
-    return match x, y with
-      | _, some false => boolV false
-      | some true, some true => boolV true
-      | _, _ => .null
-  | .or a b => do
-    let x := (← eval env a fuel).truth?
-    if x == some true then return boolV true
-    let y := (← eval env b fuel).truth?
-    return match x, y with
-      | _, some true => boolV true
-      | some false, some false => boolV false
-      | _, _ => .null
-  | .not a => do return optBool ((← eval env a fuel).truth?.map (!·))
-  | .neg a => do return negV (← eval env a fuel)
-  | .bitNot a => do return match intOf (← eval env a fuel) with | some i => .int (~~~i) | none => .null
-  | .fn name args => do
-    if Json.isJsonFn name then
-      let (v, _) ← evalJ env (.fn name args) fuel
-      return v
-    let vs ← evalArgs env args fuel
-    evalFn env name vs
-  | .agg i => .ok (env.aggs.getD i .null)
-  | .case base whens els aff coll => do
-    let b ← match base with
-      | some x => do let v ← eval env x fuel; pure (some v)
-      | none => pure none
-    let r ← caseLoop env b whens 0 aff coll fuel
-    match r with
-    | some v => return v
-    | none => match els with
-      | some x => eval env x fuel
-      | none => return .null
-  | .cast x aff => do return castV aff (← eval env x fuel)
-  | .inList x items neg aff coll => do
-    if items.isEmpty then return boolV neg
-    let v ← eval env x fuel
-    if v.isNull then return .null
-    let mut sawNull := false
-    let mut found := false
-    for it in items do
-      let w ← eval env it fuel
-      if w.isNull then sawNull := true
-      else if isTrueV (compareV .eq aff coll v w) then found := true; break
-    return if found then boolV (!neg) else if sawNull then .null else boolV neg
-  | .inVals x vals hasNull neg aff coll => do
-    let v ← eval env x fuel
-    if v.isNull then return .null
-    let v := Value.applyAff aff v
-    if memSorted coll vals v then return boolV (!neg)
-    return if hasNull then .null else boolV neg
-  | .inSel x q neg aff coll _ => do
-    let v ← eval env x fuel
-    if v.isNull then return .null
-    let rows ← runSel env q fuel
-    let mut sawNull := false
-    let mut found := false
-    for r in rows do
-      let w := r.getD 0 .null
-      if w.isNull then sawNull := true
-      else if isTrueV (compareV .eq aff coll v w) then found := true; break
-    return if found then boolV (!neg) else if sawNull then .null else boolV neg
-  | .exists q neg _ => do
-    let rows ← runSel env q fuel
-    return boolV (rows.isEmpty == neg)
-  | .scalar q _ => do
-    let rows ← runSel env q fuel
-    return ((rows[0]?).bind (·[0]?)).getD .null
-  | .matchE op x pat esc neg => do
-    let v ← eval env x fuel
-    let pv ← eval env pat fuel
-    let ev ← match esc with
-      | some e => do let r ← eval env e fuel; pure (some r)
-      | none => pure none
-    if v.isNull || pv.isNull then return .null
-    if let some ev := ev then if ev.isNull then return .null
-    let escB ← match ev with
-      | some ev =>
-        let b := ev.toBytes
-        if b.size == 0 || charLen b 0 != b.size then throw "ESCAPE expression must be a single character"
-        pure (some (rd b 0))
-      | none => pure none
-    let m := match op with
-      | .glob => globMatch pv.toBytes v.toBytes
-      | _ => likeMatch pv.toBytes v.toBytes escB
-    return boolV (m != neg)
-  | .isNull x neg => do return boolV ((← eval env x fuel).isNull != neg)
-  | .inSelRow es q neg affs colls => do
-    let vs ← es.mapM fun x => eval env x fuel
-    let rows ← runSel env q fuel
+  | .arith op a b => match foldConst a fuel, foldConst b fuel with
+    | .lit x, .lit y => .lit (arithV op x y)
+    | a, b => .arith op a b
+  | .cmp op a b aff coll => match foldConst a fuel, foldConst b fuel with
+    | .lit x, .lit y => .lit (compareV op aff coll x y)
+    | a, b => .cmp op a b aff coll
+  | .and a b => match foldConst a fuel, foldConst b fuel with
+    | .lit x, .lit y => .lit (optBool (andTruth x.truth? y.truth?))
+    | a, b => .and a b
+  | .or a b => match foldConst a fuel, foldConst b fuel with
+    | .lit x, .lit y => .lit (optBool (orTruth x.truth? y.truth?))
+    | a, b => .or a b
+  | .not a => match foldConst a fuel with
+    | .lit x => .lit (optBool (x.truth?.map (!·)))
+    | a => .not a
+  | .neg a => match foldConst a fuel with
+    | .lit x => .lit (negV x)
+    | a => .neg a
+  | .bitNot a => match foldConst a fuel with
+    | .lit x => .lit (bitNotV x)
+    | a => .bitNot a
+  | .cast a aff => match foldConst a fuel with
+    | .lit x => .lit (castV aff x)
+    | a => .cast a aff
+  | .isNull a neg => match foldConst a fuel with
+    | .lit x => .lit (boolV (x.isNull != neg))
+    | a => .isNull a neg
+  | .fn name args => .fn name (args.map (foldConst · fuel))
+  | .case base whens els aff coll =>
+    .case (base.map (foldConst · fuel)) (whens.map fun (w, t) => (foldConst w fuel, foldConst t fuel)) (els.map (foldConst · fuel)) aff coll
+  | .inList x items neg aff coll => .inList (foldConst x fuel) (items.map (foldConst · fuel)) neg aff coll
+  | .inVals x vals hasNull neg aff coll => .inVals (foldConst x fuel) vals hasNull neg aff coll
+  | .inSel x q neg aff coll corr => .inSel (foldConst x fuel) q neg aff coll corr
+  | .matchE op x p esc neg => .matchE op (foldConst x fuel) (foldConst p fuel) (esc.map (foldConst · fuel)) neg
+  | .inSelRow es q neg affs colls => .inSelRow (es.map (foldConst · fuel)) q neg affs colls
+  | e => e
+
+/-! The closures each node compiles to, given its operands compiled. -/
+namespace Compiled
+
+def lit (v : Value) : CFn := ⟨fun _ => .ok v⟩
+def col (d s : Nat) : CFn := ⟨fun env => .ok (env.col d s)⟩
+def deep : Compiled α := ⟨fun _ => .error "expression nested too deeply"⟩
+
+def arith (op : BinOp) (fa fb : CFn) : CFn := ⟨fun env => do
+  let x ← fa.run env
+  let y ← fb.run env
+  return arithV op x y⟩
+
+def ofTruth (t : CTruth) : CFn := ⟨fun env => do return optBool (← t.run env)⟩
+def neg (fa : CFn) : CFn := ⟨fun env => do return negV (← fa.run env)⟩
+def bitNot (fa : CFn) : CFn := ⟨fun env => do return bitNotV (← fa.run env)⟩
+def cast (aff : Aff) (fa : CFn) : CFn := ⟨fun env => do return castV aff (← fa.run env)⟩
+def isNull (neg : Bool) (fa : CFn) : CFn := ⟨fun env => do return boolV ((← fa.run env).isNull != neg)⟩
+def call (f : ScalarFn) (fs : Array CFn) : CFn := ⟨fun env => do f.call env (← fs.mapM (·.run env))⟩
+def ofJson (j : CFnJ) : CFn := ⟨fun env => do return (← j.run env).1⟩
+def agg (i : Nat) : CFn := ⟨fun env => .ok (env.aggs.getD i .null)⟩
+def win (i : Nat) : CFn := ⟨fun env => .ok (env.wins.getD i .null)⟩
+def raise (k : RaiseKind) (m : String) : CFn := ⟨fun _ => .error (raiseMsg k m)⟩
+
+def case (fb : Option CFn) (ws : Array (CFn × CFn)) (fe : Option CFn) (aff : Aff) (coll : Collation) : CFn := ⟨fun env => do
+  let b ← match fb with
+    | some f => do let v ← f.run env; pure (some v)
+    | none => pure none
+  for (w, t) in ws do
+    let wv ← w.run env
+    let hit : Bool := match b with
+      | some b => isTrueV (compareV .eq aff coll b wv)
+      | none => wv.truth? == some true
+    if hit then return (← t.run env)
+  match fe with
+  | some f => f.run env
+  | none => return .null⟩
+
+def inList (fx : CFn) (fs : Array CFn) (neg : Bool) (aff : Aff) (coll : Collation) : CFn := ⟨fun env => do
+  let v ← fx.run env
+  if v.isNull then return .null
+  let mut sawNull := false
+  let mut found := false
+  for f in fs do
+    let w ← f.run env
+    if w.isNull then sawNull := true
+    else if isTrueV (compareV .eq aff coll v w) then found := true; break
+  return if found then boolV (!neg) else if sawNull then .null else boolV neg⟩
+
+def inVals (fx : CFn) (vals : Array Value) (hasNull neg : Bool) (aff : Aff) (coll : Collation) : CFn := ⟨fun env => do
+  let v ← fx.run env
+  if v.isNull then return .null
+  if memSorted coll vals (Value.applyAff aff v) then return boolV (!neg)
+  return if hasNull then .null else boolV neg⟩
+
+def inSel (sub : SubRun) (q : CSel) (fx : CFn) (neg : Bool) (aff : Aff) (coll : Collation) : CFn := ⟨fun env => do
+  let v ← fx.run env
+  if v.isNull then return .null
+  let rows ← sub env q
+  return match inValues aff coll v (rows.map (·.getD 0 .null)) with
+    | some true => boolV (!neg)
+    | none => .null
+    | some false => boolV neg⟩
+
+def «exists» (sub : SubRun) (q : CSel) (neg : Bool) : CFn := ⟨fun env => do return boolV ((← sub env q).isEmpty == neg)⟩
+
+def scalar (sub : SubRun) (q : CSel) : CFn := ⟨fun env => do
+  let rows ← sub env q
+  return ((rows[0]?).bind (·[0]?)).getD .null⟩
+
+def «match» (op : MatchOp) (fx fp : CFn) (fe : Option CFn) (neg : Bool) : CFn := ⟨fun env => do
+  let v ← fx.run env
+  let pv ← fp.run env
+  let ev ← match fe with
+    | some f => do let r ← f.run env; pure (some r)
+    | none => pure none
+  if v.isNull || pv.isNull then return .null
+  if let some ev := ev then if ev.isNull then return .null
+  let escB ← match ev with
+    | some ev =>
+      let b := ev.toBytes
+      if b.size == 0 || charLen b 0 != b.size then throw "ESCAPE expression must be a single character"
+      pure (some (rd b 0))
+    | none => pure none
+  let m := match op with
+    | .glob => globMatch pv.toBytes v.toBytes
+    | _ => likeMatch pv.toBytes v.toBytes escB
+  return boolV (m != neg)⟩
+
+def inSelRow (sub : SubRun) (q : CSel) (fs : Array CFn) (neg : Bool) (affs : Array Aff) (colls : Array Collation) : CFn :=
+  ⟨fun env => do
+    let vs ← fs.mapM (·.run env)
+    let rows ← sub env q
     let mut sawNull := false
     let mut found := false
     for r in rows do
@@ -802,55 +929,251 @@ def eval (env : Env) : CExpr → Nat → EM Value
       if cs.all isTrueV then found := true; break
       -- no pair differs, but one is NULL: unknown
       if !cs.any (fun c => c.truth? == some false) && cs.any (·.isNull) then sawNull := true
-    return if found then boolV (!neg) else if sawNull then .null else boolV neg
-  | .win i => .ok (env.wins.getD i .null)
-  | .raise k m => .error (raiseMsg k m)
+    return if found then boolV (!neg) else if sawNull then .null else boolV neg⟩
 
-/-- A value and whether it carries sqlite's JSON subtype (the direct result of a JSON function or aggregate). -/
-def evalJ (env : Env) : CExpr → Nat → EM (Value × Bool)
-  | _, 0 => .error "expression nested too deeply"
+/-- Truth values. -/
+def and (ta tb : CTruth) : CTruth := ⟨fun env => do
+  let x ← ta.run env
+  if x == some false then return some false
+  return andTruth x (← tb.run env)⟩
+
+def or (ta tb : CTruth) : CTruth := ⟨fun env => do
+  let x ← ta.run env
+  if x == some true then return some true
+  return orTruth x (← tb.run env)⟩
+
+def not (ta : CTruth) : CTruth := ⟨fun env => do return (← ta.run env).map (!·)⟩
+def truthOf (f : CFn) : CTruth := ⟨fun env => do return (← f.run env).truth?⟩
+
+/-- IS and IS NOT. -/
+def isCmp (op : BinOp) (aff : Aff) (coll : Collation) (fa fb : CFn) : CTruth := ⟨fun env => do
+  let x ← fa.run env
+  let y ← fb.run env
+  return (compareV op aff coll x y).truth?⟩
+
+/-- A comparison other than IS / IS NOT, decided by `t` on operands the comparison affinity was applied to: a column
+read where it is, a literal (`w`) with the affinity applied already. -/
+@[specialize] def cmpColLit (t : Value → Value → β) (aff : Aff) (d i : Nat) (w : Value) : Compiled β :=
+  ⟨fun env => .ok (t (Value.applyAff aff (env.col d i)) w)⟩
+@[specialize] def cmpLitCol (t : Value → Value → β) (aff : Aff) (w : Value) (d i : Nat) : Compiled β :=
+  ⟨fun env => .ok (t w (Value.applyAff aff (env.col d i)))⟩
+@[specialize] def cmpColCol (t : Value → Value → β) (aff : Aff) (d i d' j : Nat) : Compiled β :=
+  ⟨fun env => .ok (t (Value.applyAff aff (env.col d i)) (Value.applyAff aff (env.col d' j)))⟩
+@[specialize] def cmpLit (t : Value → Value → β) (aff : Aff) (fa : CFn) (w : Value) : Compiled β :=
+  ⟨fun env => do return t (Value.applyAff aff (← fa.run env)) w⟩
+@[specialize] def litCmp (t : Value → Value → β) (aff : Aff) (w : Value) (fb : CFn) : Compiled β :=
+  ⟨fun env => do return t w (Value.applyAff aff (← fb.run env))⟩
+@[specialize] def cmp (t : Value → Value → β) (aff : Aff) (fa fb : CFn) : Compiled β := ⟨fun env => do
+  let x ← fa.run env
+  let y ← fb.run env
+  return t (Value.applyAff aff x) (Value.applyAff aff y)⟩
+
+/-- Values with their JSON subtype. -/
+def jsonCall (name : String) (fs : Array CFnJ) : CFnJ := ⟨fun env => do
+  let vs ← fs.mapM (·.run env)
+  Json.callJ name (vs.map (·.1)) (vs.map (·.2))⟩
+def jsonValue (fv ft : CFn) : CFnJ := ⟨fun env => do
+  let v ← fv.run env
+  let t ← ft.run env
+  return (v, t == .text "array" || t == .text "object")⟩
+def plain (f : CFn) : CFnJ := ⟨fun env => do return (← f.run env, false)⟩
+def aggJ (i : Nat) : CFnJ := ⟨fun env => .ok (env.aggs.getD i .null, env.aggJson.getD i false)⟩
+
+/-- Conditions. -/
+def isTrue (t : CTruth) : CPred := ⟨fun env => do return (← t.run env) == some true⟩
+def both (wa wb : CPred) : CPred := ⟨fun env => do if !(← wa.run env) then return false else wb.run env⟩
+def all (ps : Array CPred) : CPred := ⟨fun env => ps.allM (·.run env)⟩
+
+end Compiled
+
+/-- A comparison `a op b` (not IS / IS NOT), decided by `t`: both operands with the comparison affinity, a literal
+operand's applied once, a column operand read where it is. -/
+@[specialize] def cmpWith (t : Value → Value → β) (aff : Aff) (a b : CExpr) (fa fb : CFn) : Compiled β :=
+  match a, b with
+  | .col d i, .lit w => Compiled.cmpColLit t aff d i (Value.applyAff aff w)
+  | .lit w, .col d i => Compiled.cmpLitCol t aff (Value.applyAff aff w) d i
+  | .col d i, .col d' j => Compiled.cmpColCol t aff d i d' j
+  | _, .lit w => Compiled.cmpLit t aff fa (Value.applyAff aff w)
+  | .lit w, _ => Compiled.litCmp t aff (Value.applyAff aff w) fb
+  | _, _ => Compiled.cmp t aff fa fb
+
+mutual
+/-- An expression compiled to a closure. -/
+def compileE (sub : SubRun) : CExpr → Nat → CFn
+  | _, 0 => Compiled.deep
+  | e, fuel+1 => match e with
+  | .lit v => Compiled.lit v
+  | .col d s => Compiled.col d s
+  | .arith op a b => Compiled.arith op (compileE sub a fuel) (compileE sub b fuel)
+  | .cmp .. | .and .. | .or .. | .not .. => Compiled.ofTruth (compileT sub e fuel)
+  | .neg a => Compiled.neg (compileE sub a fuel)
+  | .bitNot a => Compiled.bitNot (compileE sub a fuel)
+  | .fn name args =>
+    if Json.isJsonFn name then Compiled.ofJson (compileJ sub e fuel)
+    else Compiled.call (fnOf name) (args.map (compileE sub · fuel))
+  | .agg i => Compiled.agg i
+  | .case base whens els aff coll =>
+    Compiled.case (base.map (compileE sub · fuel)) (whens.map fun (w, t) => (compileE sub w fuel, compileE sub t fuel))
+      (els.map (compileE sub · fuel)) aff coll
+  | .cast x aff => Compiled.cast aff (compileE sub x fuel)
+  | .inList x items neg aff coll =>
+    if items.isEmpty then Compiled.lit (boolV neg)
+    else Compiled.inList (compileE sub x fuel) (items.map (compileE sub · fuel)) neg aff coll
+  | .inVals x vals hasNull neg aff coll => Compiled.inVals (compileE sub x fuel) vals hasNull neg aff coll
+  | .inSel x q neg aff coll _ => Compiled.inSel sub q (compileE sub x fuel) neg aff coll
+  | .exists q neg _ => Compiled.exists sub q neg
+  | .scalar q _ => Compiled.scalar sub q
+  | .matchE op x pat esc neg =>
+    Compiled.match op (compileE sub x fuel) (compileE sub pat fuel) (esc.map (compileE sub · fuel)) neg
+  | .isNull x neg => Compiled.isNull neg (compileE sub x fuel)
+  | .inSelRow es q neg affs colls => Compiled.inSelRow sub q (es.map (compileE sub · fuel)) neg affs colls
+  | .win i => Compiled.win i
+  | .raise k m => Compiled.raise k m
+
+/-- An expression's truth value, compiled. -/
+def compileT (sub : SubRun) : CExpr → Nat → CTruth
+  | _, 0 => Compiled.deep
+  | e, fuel+1 => match e with
+  | .and a b => Compiled.and (compileT sub a fuel) (compileT sub b fuel)
+  | .or a b => Compiled.or (compileT sub a fuel) (compileT sub b fuel)
+  | .not a => Compiled.not (compileT sub a fuel)
+  | .cmp op a b aff coll =>
+    match op with
+    | .is | .isNot => Compiled.isCmp op aff coll (compileE sub a fuel) (compileE sub b fuel)
+    | _ => cmpWith (cmpTruth (OrdSet.of op) coll) aff a b (compileE sub a fuel) (compileE sub b fuel)
+  | e => Compiled.truthOf (compileE sub e fuel)
+
+/-- An expression compiled to its value and whether that carries sqlite's JSON subtype (the direct result of a JSON
+function or aggregate). -/
+def compileJ (sub : SubRun) : CExpr → Nat → CFnJ
+  | _, 0 => Compiled.deep
   | e, fuel+1 => match e with
   | .fn name args =>
-    if Json.isJsonFn name then do
-      let vs ← args.mapM fun a => evalJ env a fuel
-      Json.callJ name (vs.map (·.1)) (vs.map (·.2))
-    else if name == jsonValueTag then do
-      let v ← eval env (args.getD 0 (.lit .null)) fuel
-      let t ← eval env (args.getD 1 (.lit .null)) fuel
-      pure (v, t == .text "array" || t == .text "object")
-    else do let v ← eval env e fuel; pure (v, false)
-  | .agg i => .ok (env.aggs.getD i .null, env.aggJson.getD i false)
-  | e => do let v ← eval env e fuel; pure (v, false)
+    if Json.isJsonFn name then Compiled.jsonCall name (args.map (compileJ sub · fuel))
+    else if name == jsonValueTag then
+      Compiled.jsonValue (compileE sub (args.getD 0 (.lit .null)) fuel) (compileE sub (args.getD 1 (.lit .null)) fuel)
+    else Compiled.plain (compileE sub e fuel)
+  | .agg i => Compiled.aggJ i
+  | e => Compiled.plain (compileE sub e fuel)
+end
 
-def evalArgs (env : Env) (args : Array CExpr) : Nat → EM (Array Value)
-  | 0 => .error "expression nested too deeply"
-  | fuel+1 => args.mapM fun a => eval env a fuel
-
-def caseLoop (env : Env) (base : Option Value) (whens : Array (CExpr × CExpr)) (i : Nat) (aff : Aff) (coll : Collation) :
-    Nat → EM (Option Value)
-  | 0 => .ok none
-  | fuel+1 =>
-    match whens[i]? with
-    | none => .ok none
-    | some (w, t) => do
-      let wv ← eval env w fuel
-      let hit : Bool := match base with
-        | some b => isTrueV (compareV .eq aff coll b wv)
-        | none => wv.truth? == some true
-      if hit then do let r ← eval env t fuel; return some r
-      else caseLoop env base whens (i+1) aff coll fuel
-
-/-- Whether a condition is true: an AND is true when both sides are. -/
-def condTrue (env : Env) : CExpr → Nat → EM Bool
-  | _, 0 => .error "expression nested too deeply"
+/-- A WHERE or ON condition compiled: whether it is true (an AND is true when both sides are). -/
+def compileW (sub : SubRun) : CExpr → Nat → CPred
+  | _, 0 => Compiled.deep
   | e, fuel+1 => match e with
-  | .and a b => do if !(← condTrue env a fuel) then return false else condTrue env b fuel
-  | e => do return isTrueV (← eval env e fuel)
+  | .and a b => Compiled.both (compileW sub a fuel) (compileW sub b fuel)
+  | .cmp op a b aff coll =>
+    match op with
+    | .is | .isNot => Compiled.isTrue (compileT sub e fuel)
+    | _ => cmpWith (cmpHolds (OrdSet.of op) coll) aff a b (compileE sub a fuel) (compileE sub b fuel)
+  | e => Compiled.isTrue (compileT sub e fuel)
 
-/-- Whether every condition is true. -/
-def allTrue (env : Env) (conds : Array CExpr) : Nat → EM Bool
-  | 0 => .error "expression nested too deeply"
-  | fuel+1 => conds.allM fun c => condTrue env c fuel
+namespace CExpr
+/-- The expression's value, compiled (operators over literals folded first). -/
+def compile (sub : SubRun) (e : CExpr) (fuel : Nat) : CFn := compileE sub (foldConst e fuel) fuel
+/-- Whether the expression is true, compiled. -/
+def compileTrue (sub : SubRun) (e : CExpr) (fuel : Nat) : CPred := Compiled.isTrue (compileT sub (foldConst e fuel) fuel)
+/-- A WHERE or ON condition, compiled. -/
+def compileCond (sub : SubRun) (e : CExpr) (fuel : Nat) : CPred := compileW sub (foldConst e fuel) fuel
+/-- The expression's value and JSON subtype, compiled. -/
+def compileJson (sub : SubRun) (e : CExpr) (fuel : Nat) : CFnJ := compileJ sub (foldConst e fuel) fuel
+end CExpr
+
+/-- Conditions compiled to one: whether every one is true (checked in order, up to the first that is not). -/
+def compileConds (sub : SubRun) (conds : Array CExpr) (fuel : Nat) : CPred :=
+  match conds with
+  | #[c] => c.compileCond sub fuel
+  | _ => Compiled.all (conds.map (·.compileCond sub fuel))
+
+/-- A FROM item's compiled closures: its ON conditions, the conditions checked once it is bound, its access path's
+probes, its transient index's probes (with their affinities), and a table-valued function's arguments. -/
+structure SrcRun where
+  on : CPred
+  conds : CPred
+  access : Access CFn
+  auto : Array (CFn × Aff)
+  args : Array CFn
+
+instance : Inhabited SrcRun := ⟨⟨default, default, .full, #[], #[]⟩⟩
+
+/-- An aggregate's compiled closures: its arguments (with their JSON subtypes for a JSON aggregate), FILTER, and step. -/
+structure AggRun where
+  name : String
+  json : Bool
+  distinct : Bool
+  args : Array CFn
+  argsJ : Array CFnJ
+  filter : Option CPred
+  step : AggStepFn
+
+/-- A SELECT core's expressions, compiled. -/
+structure CoreRun where
+  pre : CPred
+  runs : Array SrcRun
+  groupBy : Array CFn
+  aggs : Array AggRun
+  having : Option CPred
+  cols : Array CFn
+  order : Array CFn
+  /-- the frame slots some expression reads -/
+  need : Array Bool
+  /-- each FROM item's columns in two stages: those its ON and WHERE conditions read, then the rest of `need` -/
+  needs : Array (Array Bool × Array Bool)
+deriving Inhabited
+
+/-- A core's expressions compiled once, for all its rows (a VALUES core has none). -/
+def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
+  match core with
+  | .values .. => default
+  | .select srcs pre filters groupBy _ having cols _ order aggs _ _ width _ wins =>
+    let srcExprs := srcs.foldl (fun acc s => match s with
+      | .table _ _ _ _ _ _ acc' _ _ _ on => acc ++ on ++ (match acc' with
+        | .rowidEq e => #[e] | .rowidIn es => es
+        | .rowidRange lo hi => (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
+        | .index _ _ eqs lo hi => eqs.map (·.1) ++ (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
+        | .auto keys => keys.map (·.2.1)
+        | .full => #[])
+      | .sub _ _ _ _ _ on keys | .cte _ _ _ _ _ on keys => acc ++ on ++ keys.map (·.2.1)
+      | .tvf _ args _ _ _ _ on => acc ++ args ++ on) #[]
+    let aggArgs := aggs.foldl (fun acc (.mk _ _ _ args _ f) => acc ++ args ++ f.toArray) #[]
+    let winExprs := wins.foldl (fun acc (.mk _ _ _ args f part _ ord _ _ s fi _) =>
+      acc ++ args ++ f.toArray ++ part ++ ord ++ boundExprs s ++ boundExprs fi) #[]
+    let need := neededSlots width (cols ++ order ++ groupBy ++ having.toArray ++ pre ++ filters.foldl (· ++ ·) #[] ++ srcExprs
+      ++ aggArgs ++ winExprs)
+    let needs := srcs.mapIdx fun i s =>
+      let on := match s with
+        | .table _ _ _ _ _ _ _ _ _ _ on | .sub _ _ _ _ _ on _ | .cte _ _ _ _ _ on _ | .tvf _ _ _ _ _ _ on => on
+      let conds := on ++ filters.getD i #[]
+      -- (only for a scan: a lookup's few rows are not worth it)
+      match s with
+      | .table _ _ _ _ _ _ access _ _ layout _ =>
+        let scan := match access with | .full | .rowidRange _ _ => true | _ => false
+        if conds.isEmpty || !layout.isEmpty || !scan then (need, #[]) else
+        let first := neededSlots width conds
+        (first, need.mapIdx fun k b => b && !first.getD k false)
+      | _ => (need, #[])
+    let runs := srcs.mapIdx fun i s =>
+      let (on, access, auto, args) := match s with
+        | .table _ _ _ _ _ _ access _ _ _ on => (on, access, s.autoKeys, #[])
+        | .sub _ _ _ _ _ on keys | .cte _ _ _ _ _ on keys => (on, .full, keys, #[])
+        | .tvf _ args _ _ _ _ on => (on, .full, #[], args)
+      ({ on := compileConds sub on fuel, conds := compileConds sub (filters.getD i #[]) fuel,
+         access := access.map (·.compile sub fuel), auto := auto.map fun (_, x, aff, _) => (x.compile sub fuel, aff),
+         args := args.map (·.compile sub fuel) } : SrcRun)
+    let aggs := aggs.map fun (a : CAgg) => match a with
+      | .mk name dist star args coll flt =>
+        ({ name, json := Json.isJsonAgg name, distinct := dist, args := args.map (CExpr.compile sub · fuel),
+           argsJ := args.map (CExpr.compileJson sub · fuel), filter := flt.map (CExpr.compileTrue sub · fuel),
+           step := aggStepOf name star coll } : AggRun)
+    { pre := compileConds sub pre fuel, runs, groupBy := groupBy.map (·.compile sub fuel), aggs,
+      having := having.map (·.compileTrue sub fuel), cols := cols.map (·.compile sub fuel),
+      order := order.map (·.compile sub fuel), need, needs }
+
+mutual
+/-- An expression's value (compiled, then run once). -/
+def eval (env : Env) : CExpr → Nat → EM Value
+  | _, 0 => .error "expression nested too deeply"
+  | e, fuel+1 => (e.compile (fun env q => runSel env q fuel) fuel).run env
 
 /-- Uncorrelated subqueries run once: replaced by their result. -/
 def hoist (env : Env) : CExpr → Nat → EM CExpr
@@ -893,7 +1216,7 @@ def hoistCore (env : Env) : CCore → Nat → EM CCore
     let hs (es : Array CExpr) : EM (Array CExpr) := es.mapM fun e => hoist env e fuel
     let srcs ← srcs.mapM fun (s : CSource) => (match s with
       | .table r n ipk rc dv base acc left right lay on => do
-        let acc : Access ← match acc with
+        let acc : Access CExpr ← match acc with
           | .rowidEq e => do pure (Access.rowidEq (← hoist env e fuel))
           | .rowidIn items => do pure (Access.rowidIn (← hs items))
           | a => pure a
@@ -928,7 +1251,7 @@ def runSel (env : Env) : CSel → Nat → EM (Array Row)
     let mut i := 0
     for core in cores do
       let core ← hoistCore env core fuel
-      let rs ← runCore env core (if i == 0 then hint else none) fuel
+      let rs ← runCore env none core (if i == 0 then hint else none) fuel
       if i == 0 then acc := rs else
         match ops[i - 1]? with
         | some .unionAll => acc := acc ++ rs
@@ -956,7 +1279,9 @@ def runRecursive (env : Env) (id : Nat) : CSel → Nat → EM (Array Row)
       | some e => do let v ← eval env e fuel; let i := Num.castToInt v; pure (if i < 0 then none else some i.toNatClampNeg)
       | none => pure none
     let anchor ← hoistCore env anchor fuel
-    let init := (← runCore env anchor none fuel).map (·.1)
+    let init := (← runCore env none anchor none fuel).map (·.1)
+    -- the recursive core runs once per queued row: compiled once
+    let recurC := recur.compile (fun env q => runSel env q fuel) fuel
     let init := if distinct then (firstOccurrences init).map (init.getD · #[]) else init
     let mut result := init
     let mut qi := 0
@@ -967,14 +1292,15 @@ def runRecursive (env : Env) (id : Nat) : CSel → Nat → EM (Array Row)
       qi := qi + 1
       let cs := if env.ctes.size ≤ id then env.ctes ++ Array.replicate (id + 1 - env.ctes.size) #[] else env.ctes
       let env' := { env with ctes := cs.setIfInBounds id #[row] }
-      let rs := (← runCore env' recur none fuel).map (·.1)
+      let rs := (← runCore env' (some recurC) recur none fuel).map (·.1)
       for r in rs do
         if distinct && result.any (cmpRows · r == .eq) then continue
         result := result.push r
     return match lim with | some l => result.extract 0 l | none => result
 
-/-- Runs one core: each result row with its ORDER BY keys. `hint`: enough rows (a LIMIT with no ORDER BY). -/
-def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row))
+/-- Runs one core: each result row with its ORDER BY keys. `pre?`: the core compiled already; `hint`: enough rows (a
+LIMIT with no ORDER BY). -/
+def runCore (env : Env) (pre? : Option CoreRun) : CCore → Option Nat → Nat → EM (Array (Row × Row))
   | _, _, 0 => .error "query nested too deeply"
   | .values rows order, _, fuel+1 => do
     let mut out := #[]
@@ -984,9 +1310,12 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
     return out
   | .select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width minmax wins, hint, fuel+1 => do
     let frame0 : Row := Array.replicate width .null
-    unless ← allTrue (env.push frame0) pre fuel do
+    -- the core's expressions, compiled once (or by the caller, for all its runs)
+    let cr := pre?.getD ((CCore.select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width minmax
+      wins).compile (fun env q => runSel env q fuel) fuel)
+    let preOk ← cr.pre.run (env.push frame0)
+    unless preOk do
       if isAgg && groupBy.isEmpty then pure () else return #[]
-    let preOk ← allTrue (env.push frame0) pre fuel
     -- FROM subqueries run once
     let subs ← srcs.mapM fun s => match s with
       | .sub q _ _ _ _ _ _ => do let r ← runSel env q fuel; pure (some r)
@@ -1001,62 +1330,36 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
         | _ => default
     let rightIdx := srcs.findIdx? isRightOuter
     let hint := if isAgg || distinct || !order.isEmpty || !wins.isEmpty || rightIdx.isSome then none else hint
-    let srcExprs := srcs.foldl (fun acc s => match s with
-      | .table _ _ _ _ _ _ acc' _ _ _ on => acc ++ on ++ (match acc' with
-        | .rowidEq e => #[e] | .rowidIn es => es
-        | .rowidRange lo hi => (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
-        | .index _ _ eqs lo hi => eqs.map (·.1) ++ (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
-        | .auto keys => keys.map (·.2.1)
-        | .full => #[])
-      | .sub _ _ _ _ _ on keys | .cte _ _ _ _ _ on keys => acc ++ on ++ keys.map (·.2.1)
-      | .tvf _ args _ _ _ _ on => acc ++ args ++ on) #[]
-    let aggArgs := aggs.foldl (fun acc (.mk _ _ _ args _ f) => acc ++ args ++ f.toArray) #[]
-    let winExprs := wins.foldl (fun acc (.mk _ _ _ args f part _ ord _ _ s fi _) =>
-      acc ++ args ++ f.toArray ++ part ++ ord ++ boundExprs s ++ boundExprs fi) #[]
-    let need := neededSlots width (cols ++ order ++ groupBy ++ having.toArray ++ pre ++ filters.foldl (· ++ ·) #[] ++ srcExprs
-      ++ aggArgs ++ winExprs)
-    -- each FROM item's columns in two stages: those its ON and WHERE conditions read, then the rest of `need`
-    let needs := srcs.mapIdx fun i s =>
-      let on := match s with
-        | .table _ _ _ _ _ _ _ _ _ _ on | .sub _ _ _ _ _ on _ | .cte _ _ _ _ _ on _ | .tvf _ _ _ _ _ _ on => on
-      let conds := on ++ filters.getD i #[]
-      -- (only for a scan: a lookup's few rows are not worth it)
-      match s with
-      | .table _ _ _ _ _ _ access _ _ layout _ =>
-        let scan := match access with | .full | .rowidRange _ _ => true | _ => false
-        if conds.isEmpty || !layout.isEmpty || !scan then (need, #[]) else
-        let first := neededSlots width conds
-        (first, need.mapIdx fun k b => b && !first.getD k false)
-      | _ => (need, #[])
+    let ⟨_, runs, groupByC, aggRuns, havingC, colsC, orderC, need, needs⟩ := cr
     -- a RIGHT or FULL JOIN's item: its rows are counted once, and the join marks those some earlier row matched
     let rightCount ← match rightIdx with
       | some r => do
-        let (raw, cs) ← candidates env (srcs.getD r default) (subs.getD r none) none frame0 fuel
+        let (raw, cs) ← candidates (env.push frame0) (srcs.getD r default) (runs.getD r default) (subs.getD r none) none fuel
         pure (if raw.isEmpty then cs.size else raw.size)
       | none => pure 0
     let (frames, matched) ← if !preOk then pure (#[], #[]) else if srcs.isEmpty then pure (#[frame0], #[])
-      else joinFrom env srcs subs autos filters needs 0 frame0 (#[], Array.replicate rightCount false) hint fuel
+      else joinFrom (env.push frame0) srcs runs subs autos needs 0 (#[], Array.replicate rightCount false) hint fuel
     -- then its rows nothing matched, with NULLs for the items before it
     let frames ← match rightIdx with
       | none => pure frames
       | some r => do
         let src := srcs.getD r default
-        let (raw, cs) ← candidates env src (subs.getD r none) none frame0 fuel
+        let (raw, cs) ← candidates (env.push frame0) src (runs.getD r default) (subs.getD r none) none fuel
         let mut acc : Array Row × Array Bool := (frames, #[])
         for j in [0:rightCount] do
           if matched.getD j true then continue
-          let fr := bindCand src need frame0 raw cs j
+          let e := env.push (bindCand src need frame0 raw cs j)
           let mut ok := true
           for k in [0:r+1] do
-            unless ← allTrue (env.push fr) (filters.getD k #[]) fuel do ok := false; break
-          if ok then acc ← joinFrom env srcs subs autos filters needs (r+1) fr acc none fuel
+            unless ← (runs.getD k default).conds.run e do ok := false; break
+          if ok then acc ← joinFrom e srcs runs subs autos needs (r+1) acc none fuel
         pure acc.1
     -- each result row's environment: its frame, or (aggregates) its group's
     let envs : Array Env ← if !isAgg then pure (frames.map env.push) else do
       -- groups: consecutive runs of equal GROUP BY keys after a stable sort
       let groups ← if groupBy.isEmpty then pure #[frames] else do
         let keyed ← frames.mapM fun fr => do
-          let ks ← groupBy.mapM fun g => eval (env.push fr) g fuel
+          let ks ← groupByC.mapM (·.run (env.push fr))
           pure (ks, fr)
         let sorted := sortBy keyed fun a b => cmpRowsColl gcolls a.1 b.1
         let gs := sorted.foldl (fun (gs : Array (Row × Array Row)) (k, fr) =>
@@ -1067,50 +1370,50 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
       let mut out : Array Env := #[]
       for g in groups do
         -- step every aggregate over the group's rows
-        let mut accs : Array AggAcc := aggs.map fun _ => {}
+        let mut accs : Array AggAcc := aggRuns.map fun _ => {}
         let mut i := 0
         for fr in g do
           let e := env.push fr
           let mut j := 0
-          for .mk name dist star args coll flt in aggs do
+          for a in aggRuns do
             -- a FILTER (WHERE f) skips the rows f is not true for
-            if let some f := flt then
-              if !isTrueV (← eval e f fuel) then
+            if let some f := a.filter then
+              if !(← f.run e) then
                 j := j + 1
                 continue
             -- (a JSON aggregate sees which arguments are JSON)
-            let vjs ← if Json.isJsonAgg name then args.mapM fun a => evalJ e a fuel
-              else do let vs ← args.mapM fun a => eval e a fuel; pure (vs.map fun v => (v, false))
+            let vjs ← if a.json then a.argsJ.mapM (·.run e)
+              else do let vs ← a.args.mapM (·.run e); pure (vs.map fun v => (v, false))
             let vs := vjs.map (·.1)
             -- taken out of the array first, so it is updated in place
             let acc := accs.getD j {}
             accs := accs.setIfInBounds j {}
-            let acc := if dist then (if vs.any (·.isNull) then acc else
-                { acc with seen := acc.seen.push vs, seenJ := if Json.isJsonAgg name then acc.seenJ.push (vjs.map (·.2)) else acc.seenJ })
-              else if Json.isJsonAgg name then { acc with json := Json.aggStep name acc.json vs (vjs.map (·.2)) }
-              else aggStep name star coll acc vs i
+            let acc := if a.distinct then (if vs.any (·.isNull) then acc else
+                { acc with seen := acc.seen.push vs, seenJ := if a.json then acc.seenJ.push (vjs.map (·.2)) else acc.seenJ })
+              else if a.json then { acc with json := Json.aggStep a.name acc.json vs (vjs.map (·.2)) }
+              else a.step.step acc vs i
             accs := accs.setIfInBounds j acc
             j := j + 1
           i := i + 1
         let mut vals := #[]
         let mut j := 0
-        for .mk name dist star _ coll _ in aggs do
+        for ar in aggRuns do
           let acc := accs.getD j {}
-          let acc := if dist then
+          let acc := if ar.distinct then
               (firstOccurrences acc.seen).foldl (fun a k =>
-                if Json.isJsonAgg name then { a with json := Json.aggStep name a.json (acc.seen.getD k #[]) (acc.seenJ.getD k #[]) }
-                else aggStep name star coll a (acc.seen.getD k #[]) 0) ({} : AggAcc)
+                if ar.json then { a with json := Json.aggStep ar.name a.json (acc.seen.getD k #[]) (acc.seenJ.getD k #[]) }
+                else ar.step.step a (acc.seen.getD k #[]) 0) ({} : AggAcc)
             else acc
-          vals := vals.push (← aggFinal name acc)
+          vals := vals.push (← aggFinal ar.name acc)
           accs := accs.setIfInBounds j acc
           j := j + 1
         let rep : Row := match minmax with
           | some (k, _) => g.getD (accs.getD k {}).bestAt frame0
           -- sqlite reads bare columns from a group's first row (with no GROUP BY, the last)
           | none => if groupBy.isEmpty then g.back?.getD frame0 else g[0]?.getD frame0
-        let e := { (env.push rep) with aggs := vals, aggJson := aggs.map fun (.mk n _ _ _ _ _) => Json.isJsonAgg n }
-        if let some h := having then
-          if (← eval e h fuel).truth? != some true then continue
+        let e := { (env.push rep) with aggs := vals, aggJson := aggRuns.map (·.json) }
+        if let some h := havingC then
+          if !(← h.run e) then continue
         out := out.push e
       pure out
     -- window functions, over all the result rows
@@ -1118,8 +1421,8 @@ def runCore (env : Env) : CCore → Option Nat → Nat → EM (Array (Row × Row
     let mut out := #[]
     for i in [0:envs.size] do
       let e := { (envs.getD i env) with wins := winCols.map (·.getD i .null) }
-      let vs ← cols.mapM fun c => eval e c fuel
-      let ks ← order.mapM fun c => eval e c fuel
+      let vs ← colsC.mapM (·.run e)
+      let ks ← orderC.mapM (·.run e)
       out := out.push (vs, ks)
     if distinct then
       let rows := out.map (·.1)
@@ -1133,27 +1436,37 @@ def winColumn (envs : Array Env) (w : CWin) : Nat → EM (Array Value)
   | fuel+1 => do
     let .mk name distinct star args filter part pcolls ord dirs units start finish excl := w
     let n := envs.size
-    let pk ← envs.mapM fun e => part.mapM fun x => eval e x fuel
-    let ok ← envs.mapM fun e => ord.mapM fun x => eval e x fuel
-    let av ← envs.mapM fun e => args.mapM fun x => eval e x fuel
+    let sub : SubRun := fun env q => runSel env q fuel
+    let comp (xs : Array CExpr) : Array CFn := xs.map (·.compile sub fuel)
+    let (partC, ordC, argsC) := (comp part, comp ord, comp args)
+    let pk ← envs.mapM fun e => partC.mapM (·.run e)
+    let ok ← envs.mapM fun e => ordC.mapM (·.run e)
+    let av ← envs.mapM fun e => argsC.mapM (·.run e)
     let isJ := Json.isJsonAgg name
-    let aj ← if isJ then envs.mapM fun e => args.mapM fun x => do pure (← evalJ e x fuel).2 else pure #[]
+    let argsJ := args.map (·.compileJson sub fuel)
+    let aj ← if isJ then envs.mapM fun e => argsJ.mapM fun x => do pure (← x.run e).2 else pure #[]
     -- one row into an aggregate (a JSON one with its arguments' subtypes)
+    let step := aggStepOf name star .binary
     let stepW (acc : AggAcc) (row : Nat) (vs : Array Value) (at_ : Nat) : AggAcc :=
-      if isJ then { acc with json := Json.aggStep name acc.json vs (aj.getD row #[]) } else aggStep name star .binary acc vs at_
-    let fv ← envs.mapM fun e => match filter with
-      | some f => do pure ((← eval e f fuel).truth? == some true)
+      if isJ then { acc with json := Json.aggStep name acc.json vs (aj.getD row #[]) } else step.step acc vs at_
+    let filterC := filter.map (·.compileTrue sub fuel)
+    let fv ← envs.mapM fun e => match filterC with
+      | some f => f.run e
       | none => pure true
+    let boundC (b : CBound) : Option CFn := match b with
+      | .preceding x | .following x => some (x.compile sub fuel)
+      | _ => none
+    let (startC, finishC) := (boundC start, boundC finish)
     let offs ← envs.mapM fun e => do
-      let o (b : CBound) : EM Int := match b with
-        | .preceding x | .following x => do
-          let v ← eval e x fuel
+      let o (b : Option CFn) : EM Int := match b with
+        | some x => do
+          let v ← x.run e
           match v with
           | .int i => if i < 0 then throw "frame starting offset must be a non-negative integer" else pure i.toInt
           | .real r => if r < 0 then throw "frame starting offset must be a non-negative number" else pure r.toInt64.toInt
           | _ => throw "frame starting offset must be a non-negative integer"
-        | _ => pure 0
-      pure (← o start, ← o finish)
+        | none => pure 0
+      pure (← o startC, ← o finishC)
     let rowsInOrder := sortBy ((List.range n).toArray) fun a b =>
       match cmpRowsColl pcolls (pk.getD a #[]) (pk.getD b #[]) with
       | .eq => match cmpKeys dirs (ok.getD a #[]) (ok.getD b #[]) with
@@ -1297,107 +1610,106 @@ def winColumn (envs : Array Env) (w : CWin) : Nat → EM (Array Value)
 /-- The nested-loop join from FROM item `i` on: each candidate row of the item bound into the frame, its conditions
 checked, then the later items; a LEFT JOIN's item with no match binds NULLs; a RIGHT JOIN's matched rows are marked.
 `needs`: each item's slots its conditions read, and the rest it binds once they pass. -/
-def joinFrom (env : Env) (srcs : Array CSource) (subs : Array (Option (Array Row))) (autos : Array (Option (Thunk AutoIdx)))
-    (filters : Array (Array CExpr))
-    (needs : Array (Array Bool × Array Bool)) (i : Nat) (frame : Row) (acc : Array Row × Array Bool) (hint : Option Nat) :
+def joinFrom (e : Env) (srcs : Array CSource) (runs : Array SrcRun) (subs : Array (Option (Array Row)))
+    (autos : Array (Option (Thunk AutoIdx))) (needs : Array (Array Bool × Array Bool)) (i : Nat) (acc : Array Row × Array Bool) (hint : Option Nat) :
     Nat → EM (Array Row × Array Bool)
   | 0 => .error "query nested too deeply"
   | fuel+1 => do
-    let some src := srcs[i]? | return (acc.1.push frame, acc.2)
-    let (base, n, left, right, on) := match src with
-      | .table _ n _ _ _ base _ left right _ on => (base, n + 1, left, right, on)
-      | .sub _ n base left right on _ => (base, n, left, right, on)
-      | .cte _ n base left right on _ => (base, n, left, right, on)
-      | .tvf _ _ n base left right on => (base, n, left, right, on)
-    let (raw, cands) ← candidates env src (subs.getD i none) (autos.getD i none) frame fuel
-    let conds := filters.getD i #[]
+    let some src := srcs[i]? | return (acc.1.push e.top, acc.2)
+    let (base, n, left, right) := match src with
+      | .table _ n _ _ _ base _ left right _ _ => (base, n + 1, left, right)
+      | .sub _ n base left right _ _ => (base, n, left, right)
+      | .cte _ n base left right _ _ => (base, n, left, right)
+      | .tvf _ _ n base left right _ => (base, n, left, right)
+    let run := runs.getD i default
+    let (raw, cands) ← candidates e src run (subs.getD i none) (autos.getD i none) fuel
     let (first, rest) := needs.getD i (#[], #[])
+    let frame := e.top
     let mut acc := acc
     let mut matched := false
-    -- one frame written in place, row after row (copied only when a row is kept)
-    let mut fr := frame
+    -- one environment, its frame written in place row after row (copied only when a row is kept)
+    let mut e := e
     let count := if raw.isEmpty then cands.size else raw.size
     for j in [0:count] do
       if let some h := hint then if acc.1.size ≥ h then break
-      fr := bindCand src first fr raw cands j
-      let e := env.push fr
+      e := e.modifyTop (bindCand src first · raw cands j)
       if left || right then
-        unless ← allTrue e on fuel do continue
+        unless ← run.on.run e do continue
       matched := true
       if right then acc := (acc.1, acc.2.setIfInBounds j true)
-      if ← allTrue e conds fuel then
-        fr := bindRest src rest fr raw j
-        acc ← joinFrom env srcs subs autos filters needs (i+1) fr acc hint fuel
+      if ← run.conds.run e then
+        e := e.modifyTop (bindRest src rest · raw j)
+        acc ← joinFrom e srcs runs subs autos needs (i+1) acc hint fuel
     if left && !matched then
       let nulls := n.fold (fun k _ (fr : Row) => fr.setIfInBounds (base + k) .null) frame
-      if ← allTrue (env.push nulls) conds fuel then
-        acc ← joinFrom env srcs subs autos filters needs (i+1) nulls acc hint fuel
+      let en := e.modifyTop fun _ => nulls
+      if ← run.conds.run en then
+        acc ← joinFrom en srcs runs subs autos needs (i+1) acc hint fuel
     return acc
 
 /-- The rows a FROM item offers for the current frame: a table's (rowid, record) pairs through its access path, or a
 subquery's or WITH table's rows. `auto`: the item's transient index. -/
-def candidates (env : Env) (src : CSource) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) (frame : Row) :
+def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) :
     Nat → EM (Array (Int64 × ByteArray) × Array Row)
   | 0 => .error "query nested too deeply"
-  | fuel+1 => do
+  | _+1 => do
     if let some ai := auto then
       let keys := src.autoKeys
       let mut probe : Array Value := #[]
-      for (_, x, aff, _) in keys do
-        let v := Value.applyAff aff (← eval (env.push frame) x fuel)
+      for (x, aff) in run.auto do
+        let v := Value.applyAff aff (← x.run e)
         if v.isNull then return (#[], #[])
         probe := probe.push v
       return autoSeek ai.get (keys.map (·.2.2.2)) probe
     match src with
     | .sub .. => .ok (#[], sub.getD #[])
-    | .cte id .. => .ok (#[], env.ctes.getD id #[])
-    | .tvf fn args _ _ _ _ _ => do
-      let vs ← args.mapM fun x => eval (env.push frame) x fuel
+    | .cte id .. => .ok (#[], e.ctes.getD id #[])
+    | .tvf fn _ _ _ _ _ _ => do
+      let vs ← run.args.mapM (·.run e)
       if fn.startsWith "pragma_" then
-        return (#[], ((schemaPragma env.schema (fn.drop 7).toString ((vs.getD 0 .null).toText)).map (·.2)).getD #[])
+        return (#[], ((schemaPragma e.schema (fn.drop 7).toString ((vs.getD 0 .null).toText)).map (·.2)).getD #[])
       let rows ← tvfRows (fn == "json_tree") (vs.getD 0 .null) vs[1]?
       return (#[], rows)
-    | .table root n _ realCols _ _ access _ _ layout _ => do
-      let p := env.pager
+    | .table root n _ realCols _ _ _ _ _ layout _ => do
+      let p := e.pager
       -- a WITHOUT ROWID table: its index-format tree's records, each field placed in its column
       if !layout.isEmpty then
         return (#[], BTree.foldIndex p root #[] fun acc r => acc.push (worRow n layout realCols r))
-      let e := env.push frame
       let dec (rs : Array (Int64 × ByteArray)) : Array (Int64 × ByteArray) × Array Row := (rs, #[])
       let find (k : Int64) : Array (Int64 × ByteArray) :=
         match BTree.tableFind p root k with | some c => #[(k, c.payload)] | none => #[]
-      match access with
+      match run.access with
       | .full => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
       | .rowidEq x => do
-        let v ← eval e x fuel
+        let v ← x.run e
         return match toRowid? v with | some k => dec (find k) | none => (#[], #[])
       | .rowidIn items => do
-        let vs ← items.mapM fun x => eval e x fuel
+        let vs ← items.mapM (·.run e)
         let ks := sortBy (vs.filterMap toRowid?) compare
         let ks := ks.foldl (fun acc k => if acc.back? == some k then acc else acc.push k) #[]
         return dec (ks.foldl (fun acc k => acc ++ find k) #[])
       | .rowidRange lo hi => do
         let lo' ← match lo with
-          | some (x, incl) => do let v ← eval e x fuel; pure (boundRowid v incl true)
+          | some (x, incl) => do let v ← x.run e; pure (boundRowid v incl true)
           | none => pure none
         let hi' ← match hi with
-          | some (x, incl) => do let v ← eval e x fuel; pure (boundRowid v incl false)
+          | some (x, incl) => do let v ← x.run e; pure (boundRowid v incl false)
           | none => pure none
         return dec (scanRange p root lo' hi')
       | .index iroot ki eqs lo hi => do
         let mut eqv : Array Value := #[]
         for (x, aff) in eqs do
-          let v := Value.applyAff aff (← eval e x fuel)
+          let v := Value.applyAff aff (← x.run e)
           if v.isNull then return (#[], #[])
           eqv := eqv.push v
         let lov ← match lo with
           | some (x, _, aff) => do
-            let v := Value.applyAff aff (← eval e x fuel)
+            let v := Value.applyAff aff (← x.run e)
             pure (if v.isNull then none else some v)
           | none => pure none
         let hiv ← match hi with
           | some (x, incl, aff) => do
-            let v := Value.applyAff aff (← eval e x fuel)
+            let v := Value.applyAff aff (← x.run e)
             pure (if v.isNull then none else some (v, incl))
           | none => pure none
         let eqProbe := encodeRecord eqv
