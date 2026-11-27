@@ -272,15 +272,37 @@ def autoKeys (base ncols : Nat) (rowid : Option Nat) (conds : Array CExpr) : Arr
     | some k => if ks.any (·.1 == k.1) then ks else ks.push k
     | none => ks) #[]
 
-/-- The value of a DEFAULT expression that is a constant (a literal, a signed number). -/
-def constDefault : Option Expr → Value
-  | some (.lit v) => v
-  | some (.un .neg (.lit (.int i))) => .int (-i)
-  | some (.un .neg (.lit (.real f))) => .real (-f)
-  | _ => .null
+/-- CAST to an affinity. -/
+def castV (aff : Aff) (v : Value) : Value :=
+  match v with
+  | .null => .null
+  | v => match aff with
+    | .integer => .int (Num.castToInt v)
+    | .real => .real (Num.castToReal v)
+    | .numeric => Num.castToNumeric v
+    | .text => .text v.toText
+    | .blob | .none => .blob v.toBytes
+
+/-- Unary minus of a constant: text and blobs read as numbers; the smallest Int64 negates to a real. -/
+def negConst : Value → Value
+  | .null => .null
+  | .int i => if i == Int64.minValue then .real (-i.toFloat) else .int (-i)
+  | .real f => .real (-f)
+  | v => match Num.castToNumeric v with
+    | .int i => if i == Int64.minValue then .real (-i.toFloat) else .int (-i)
+    | .real f => .real (-f)
+    | _ => .int 0
+
+/-- sqlite3ValueFromExpr on a DEFAULT: the value of a literal, unary + or -, or CAST of those; any other expression has none. -/
+def constDefault? : Expr → Option Value
+  | .lit v => some v
+  | .un .pos e => constDefault? e
+  | .un .neg e => (constDefault? e).map negConst
+  | .cast e t => (constDefault? e).map (castV (Aff.ofType t))
+  | _ => none
 
 /-- A column's default as a stored value: a row older than the column (ALTER TABLE ADD COLUMN) reads it through the column's affinity. -/
-def columnDefault (c : Column) : Value := Value.applyAff c.aff (constDefault c.default)
+def columnDefault (c : Column) : Value := Value.applyAff c.aff ((c.default.bind constDefault?).getD .null)
 
 def stripCollate (e : Expr) : Expr := match e with | .collate x _ => x | x => x
 

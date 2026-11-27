@@ -643,7 +643,12 @@ def alterAdd (tn : String) (cd : ColumnDef) (colText : String) : XS Unit := do
   if (t.colIndex? cd.name).isSome then parseErr s!"duplicate column name: {cd.name}"
   if cd.primaryKey then parseErr "Cannot add a PRIMARY KEY column"
   if cd.unique then parseErr "Cannot add a UNIQUE column"
-  if cd.notNull && cd.default.isNone then parseErr "Cannot add a NOT NULL column with default value NULL"
+  let notNullMsg := "Cannot add a NOT NULL column with default value NULL"
+  let refusal : Option String := match cd.default with
+    | none | some (.lit .null) => if cd.notNull then some notNullMsg else none
+    | some e => if (constDefault? e).isNone then some "Cannot add a column with non-constant default" else none
+  if let some m := refusal then
+    if !(BTree.Cursor.first (← get).pager t.root).atEnd then runErr m
   -- the column's text goes before the last ")"
   let close := (List.range t.sql.utf8ByteSize).foldl (fun acc i => if Lex.byteAt t.sql i == 41 then i else acc) t.sql.utf8ByteSize
   let sql := splice t.sql close close (", " ++ colText)
