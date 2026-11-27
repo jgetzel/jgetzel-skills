@@ -53,14 +53,18 @@ inductive CWin where
       (partition : Array CExpr) (pcolls : Array Collation) (order : Array CExpr) (dirs : Array (Bool × Bool × Collation))
       (units : FrameUnits) (start finish : CBound) (exclude : FrameExclude)
 
-/-- How a table's rows are found: all of them, by rowid, by a rowid range, or through an index (an equality prefix,
-then an optional range on the next column; each probe value converted with the comparison's affinity). -/
+/-- How a table's rows are found: all of them, by rowid, by a rowid range, through an index (an equality prefix, then an
+optional range on the next column; each probe value converted with the comparison's affinity), or through a transient
+index. -/
 inductive Access where
   | full
   | rowidEq (e : CExpr)
   | rowidIn (items : Array CExpr)
   | rowidRange (lo hi : Option (CExpr × Bool))
   | index (root : Pgno) (ki : KeyInfo) (eqs : Array (CExpr × Aff)) (lo hi : Option (CExpr × Bool × Aff))
+  /-- sqlite's automatic index: built once per run of the SELECT on the columns at slots `keys`, then searched for the rows
+  whose columns equal the probes (both sides with the comparison's affinity, under its collation) -/
+  | auto (keys : Array (Nat × CExpr × Aff × Collation))
 
 /-- A FROM item: its first slot in the row frame; for an outer join the ON conditions that decide whether a row matched;
 `left`: a row of the earlier items with no match gets NULLs here (LEFT, FULL); `right`: a row of this item no earlier
@@ -69,8 +73,11 @@ row matched gets NULLs for the earlier items (RIGHT, FULL). A table's slots are 
 inductive CSource where
   | table (root : Pgno) (ncols : Nat) (ipk : Option Nat) (realCols : Array Bool) (defaults : Array Value) (base : Nat)
       (access : Access) (left : Bool) (right : Bool) (layout : Array Nat) (on : Array CExpr)
+  /-- `auto`: the keys of its transient index, as in `Access.auto` (none when empty) -/
   | sub (q : CSel) (ncols : Nat) (base : Nat) (left : Bool) (right : Bool) (on : Array CExpr)
+      (auto : Array (Nat × CExpr × Aff × Collation))
   | cte (id : Nat) (ncols : Nat) (base : Nat) (left : Bool) (right : Bool) (on : Array CExpr)
+      (auto : Array (Nat × CExpr × Aff × Collation))
   /-- a table-valued function (json_each, json_tree, pragma_*) over its arguments, evaluated for each row of the earlier
   items -/
   | tvf (fn : String) (args : Array CExpr) (ncols : Nat) (base : Nat) (left : Bool) (right : Bool) (on : Array CExpr)
@@ -106,7 +113,7 @@ instance : Inhabited CExpr := ⟨.lit .null⟩
 def CSel.ncols : CSel → Nat
   | .mk _ _ _ _ _ _ n => n
 
-instance : Inhabited CSource := ⟨.cte 0 0 0 false false #[]⟩
+instance : Inhabited CSource := ⟨.cte 0 0 0 false false #[] #[]⟩
 instance : Inhabited CSel := ⟨.mk #[] #[] #[] #[] none none 0⟩
 
 end LSql
