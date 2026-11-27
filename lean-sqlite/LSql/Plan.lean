@@ -3,6 +3,29 @@ import LSql.Schema
 collations decided, and SELECTs with an access path chosen for each table (sqlite's where.c in miniature). -/
 namespace LSql
 
+/-- How a table's rows are found: all of them, by rowid, by a rowid range, through an index (an equality prefix, then an
+optional range on the next column; each probe value converted with the comparison's affinity), or through a transient
+index. `E`: the probes' expressions (`CExpr` in a plan, compiled closures when it runs). -/
+inductive Access (E : Type) where
+  | full
+  | rowidEq (e : E)
+  | rowidIn (items : Array E)
+  | rowidRange (lo hi : Option (E × Bool))
+  | index (root : Pgno) (ki : KeyInfo) (eqs : Array (E × Aff)) (lo hi : Option (E × Bool × Aff))
+  /-- sqlite's automatic index: built once per run of the SELECT on the columns at slots `keys`, then searched for the rows
+  whose columns equal the probes (both sides with the comparison's affinity, under its collation) -/
+  | auto (keys : Array (Nat × E × Aff × Collation))
+
+/-- The same access path with each probe expression mapped. -/
+def Access.map (f : α → β) : Access α → Access β
+  | .full => .full
+  | .rowidEq e => .rowidEq (f e)
+  | .rowidIn items => .rowidIn (items.map f)
+  | .rowidRange lo hi => .rowidRange (lo.map fun (e, i) => (f e, i)) (hi.map fun (e, i) => (f e, i))
+  | .index root ki eqs lo hi =>
+    .index root ki (eqs.map fun (e, a) => (f e, a)) (lo.map fun (e, i, a) => (f e, i, a)) (hi.map fun (e, i, a) => (f e, i, a))
+  | .auto keys => .auto (keys.map fun (s, e, a, c) => (s, f e, a, c))
+
 mutual
 /-- A compiled expression. A column is `(depth, slot)`: the row frame `depth` levels out from the current one. -/
 inductive CExpr where
@@ -53,26 +76,13 @@ inductive CWin where
       (partition : Array CExpr) (pcolls : Array Collation) (order : Array CExpr) (dirs : Array (Bool × Bool × Collation))
       (units : FrameUnits) (start finish : CBound) (exclude : FrameExclude)
 
-/-- How a table's rows are found: all of them, by rowid, by a rowid range, through an index (an equality prefix, then an
-optional range on the next column; each probe value converted with the comparison's affinity), or through a transient
-index. -/
-inductive Access where
-  | full
-  | rowidEq (e : CExpr)
-  | rowidIn (items : Array CExpr)
-  | rowidRange (lo hi : Option (CExpr × Bool))
-  | index (root : Pgno) (ki : KeyInfo) (eqs : Array (CExpr × Aff)) (lo hi : Option (CExpr × Bool × Aff))
-  /-- sqlite's automatic index: built once per run of the SELECT on the columns at slots `keys`, then searched for the rows
-  whose columns equal the probes (both sides with the comparison's affinity, under its collation) -/
-  | auto (keys : Array (Nat × CExpr × Aff × Collation))
-
 /-- A FROM item: its first slot in the row frame; for an outer join the ON conditions that decide whether a row matched;
 `left`: a row of the earlier items with no match gets NULLs here (LEFT, FULL); `right`: a row of this item no earlier
 row matched gets NULLs for the earlier items (RIGHT, FULL). A table's slots are its columns, then its rowid; `layout`
 (WITHOUT ROWID tables) is the table column of each record field, whose tree is then the index-format table. -/
 inductive CSource where
   | table (root : Pgno) (ncols : Nat) (ipk : Option Nat) (realCols : Array Bool) (defaults : Array Value) (base : Nat)
-      (access : Access) (left : Bool) (right : Bool) (layout : Array Nat) (on : Array CExpr)
+      (access : Access CExpr) (left : Bool) (right : Bool) (layout : Array Nat) (on : Array CExpr)
   /-- `auto`: the keys of its transient index, as in `Access.auto` (none when empty) -/
   | sub (q : CSel) (ncols : Nat) (base : Nat) (left : Bool) (right : Bool) (on : Array CExpr)
       (auto : Array (Nat × CExpr × Aff × Collation))
