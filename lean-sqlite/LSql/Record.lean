@@ -51,20 +51,29 @@ def encodeRecord (vals : Array Value) : ByteArray :=
   let b := types.foldl (fun b (t, _) => putVarint b t) b
   vals.foldl pushBody b
 
+/-- The integer of an integer serial type (1 to 6, 8, 9) whose body starts at `o`: read in place, no `Value`. -/
+def intField (p : ByteArray) (o : Nat) (t : UInt64) : Int64 :=
+  match t with
+  | 8 => 0
+  | 9 => 1
+  | t =>
+    let n := serialLen t
+    let s := (64 - 8 * n).toUInt64
+    ((rdBE p o n) <<< s).toInt64 >>> s.toInt64
+
+/-- The real of serial type 7 whose body starts at `o`. -/
+def realField (p : ByteArray) (o : Nat) : Float := Float.ofBits (rdBE p o 8)
+
 /-- The value of serial type `t` whose body starts at `o`. -/
 def decodeField (p : ByteArray) (o : Nat) (t : UInt64) : Value :=
   match t with
   | 0 => .null
   | 8 => .int 0
   | 9 => .int 1
-  | 7 => .real (Float.ofBits (rdBE p o 8))
+  | 7 => .real (realField p o)
   | 10 | 11 => .null
   | t =>
-    if t ≤ 6 then
-      let n := serialLen t
-      let raw := rdBE p o n
-      let s := (64 - 8 * n).toUInt64
-      .int ((raw <<< s).toInt64 >>> s.toInt64)
+    if t ≤ 6 then .int (intField p o t)
     else
       let n := serialLen t
       let bytes := p.extract o (o + n)

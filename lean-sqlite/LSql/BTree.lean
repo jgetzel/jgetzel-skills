@@ -20,14 +20,14 @@ where
       if keys.getD mid 0 < k then go (mid+1) hi f else go lo mid f
 
 /-- The first `i` with `cells[i] ≥ key` under the index's order. -/
-def lowerBoundRec (ki : KeyInfo) (cells : Array Cell) (key : ByteArray) : Nat := go 0 cells.size 64
+def lowerBoundRec (ki : KeyInfo) (cells : Array Cell) (key : ByteArray) : Nat := go (decodeRecord key) 0 cells.size 64
 where
-  go (lo hi : Nat) : Nat → Nat
+  go (probe : Array Value) (lo hi : Nat) : Nat → Nat
     | 0 => lo
     | f+1 =>
       if lo ≥ hi then lo else
       let mid := (lo + hi) / 2
-      if cmpRecords ki (cells.getD mid default).payload key == .lt then go (mid+1) hi f else go lo mid f
+      if cmpRecordProbe ki (cells.getD mid default).payload probe == .lt then go probe (mid+1) hi f else go probe lo mid f
 
 /-! ## Splitting an over-full node
 
