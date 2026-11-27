@@ -142,6 +142,9 @@ def indexesOf (s : Schema) (t : String) : Array Index :=
   let temp := ((s.table? t).map (·.temp)).getD false
   let b := (splitQual t).2
   s.indexes.filter fun ix => nameEq ix.table b && ix.temp == temp
+/-- The indexes of table `t` (as found in this schema). -/
+def indexesOfTable (s : Schema) (t : Table) : Array Index :=
+  s.indexes.filter fun ix => nameEq ix.table t.name && ix.temp == t.temp
 def trigger? (s : Schema) (n : String) : Option Trigger := lookup s.triggers (·.name) (·.temp) n
 def exists? (s : Schema) (n : String) : Bool := (s.table? n).isSome || (s.view? n).isSome || (s.index? n).isSome
 end Schema

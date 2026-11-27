@@ -528,6 +528,10 @@ def endPos (src : String) (pos : Nat) : String :=
 #guard isComplete "create table t(a); create index i on t(a);"
 #guard isComplete "create table trigger(a);"
 #guard !isComplete "create view v as select 1; create trigger t after insert on x begin select 1;"
+-- quoted names, blobs, numbers and parameters are one token each: a `;` inside, or a keyword glued to them, does not count
+#guard isComplete "select x'ab';" && !isComplete "select x'ab" && isComplete "select [a;b];" && !isComplete "select [a;"
+#guard isComplete "select 'a''b;';" && !isComplete "select `a;" && isComplete "select :a, ?1, $b, 1e5, .5, 0x1f;"
+#guard !isComplete "create trigger t after insert on x begin select 1; 1end;" && isComplete "create trigger t after insert on x begin select 1; end;"
 #guard isComplete "select 1 end;"
 #guard !isComplete "select 1; end"
 #guard isComplete "create trigger t after insert on x begin select 1; /* c */ end /* d */ ; -- e"

@@ -43,4 +43,8 @@ theorem serialLen_int (i : Int64) : serialLen (serialType (.int i)).1 = (serialT
   simp only [serialType]
   split <;> (try split) <;> (try split) <;> (try split) <;> (try split) <;> (try split) <;> (try split) <;> simp_all [serialLen]
 
+/-- The hand-written constructor index of a token kind (which `==` on kinds compares) is the constructor index Lean generates. -/
+theorem TK_idx_eq_ctorIdx (k : Lex.TK) : k.idx.toNat = k.ctorIdx := by
+  cases k <;> rfl
+
 end LSql.Proofs
