@@ -154,20 +154,30 @@ def negV : Value → Value
 
 /-! ## LIKE and GLOB (func.c patternCompare), on bytes; LIKE folds ASCII case only, as sqlite's default. -/
 
+/-- Bytes read in place, 0 past the end: what LIKE and GLOB match, so a text value is read without a copy. -/
+class ByteSrc (σ : Type) where
+  byteSize : σ → Nat
+  byteAt : σ → Nat → UInt8
+export ByteSrc (byteSize byteAt)
+
+instance : ByteSrc ByteArray := ⟨ByteArray.size, rd⟩
+
+instance : ByteSrc String := ⟨String.utf8ByteSize, fun s i => if h : i < s.utf8ByteSize then s.getUTF8Byte ⟨i⟩ h else 0⟩
+
 /-- Bytes of the character starting at `i` (sqlite's READ_UTF8): a lead byte (>= 0xC0) and the continuation bytes after it; any other byte alone. -/
-@[inline] def charLen (b : ByteArray) (i : Nat) : Nat :=
-  if rd b i < 0xC0 then 1 else 1 + charConts b (i + 1) (b.size + 1)
+@[inline] def charLen {σ : Type} [ByteSrc σ] (b : σ) (i : Nat) : Nat :=
+  if byteAt b i < 0xC0 then 1 else 1 + charConts b (i + 1) (byteSize b + 1)
 where
-  charConts (b : ByteArray) (j : Nat) : Nat → Nat
+  charConts {σ : Type} [ByteSrc σ] (b : σ) (j : Nat) : Nat → Nat
     | 0 => 0
-    | f+1 => if j < b.size && rd b j &&& 0xC0 == 0x80 then 1 + charConts b (j + 1) f else 0
+    | f+1 => if j < byteSize b && byteAt b j &&& 0xC0 == 0x80 then 1 + charConts b (j + 1) f else 0
 
 /-- Whether `n` bytes of `a` at `i` equal those of `b` at `j` (ASCII case folded when `fold`). -/
-def bytesEq (a : ByteArray) (i : Nat) (b : ByteArray) (j : Nat) (fold : Bool) : Nat → Bool
+def bytesEq {σ : Type} [ByteSrc σ] (a : ByteArray) (i : Nat) (b : σ) (j : Nat) (fold : Bool) : Nat → Bool
   | 0 => true
   | n+1 =>
     let x := rd a i
-    let y := rd b j
+    let y := byteAt b j
     (if fold then foldCase x == foldCase y else x == y) && bytesEq a (i+1) b (j+1) fold n
 
 /-- How a LIKE match ended: `abort` when the string ran out while the pattern still needed characters, so no later
@@ -184,7 +194,7 @@ def likeEscape (b : ByteArray) : Option ByteArray :=
 
 /-- LIKE: `%` any run, `_` one character, `esc` makes the next character literal. Both texts end at their first NUL, as
 the C strings sqlite3 matches; reading past an array's end gives the NUL too. -/
-def likeMatch (pat str : ByteArray) (esc : Option ByteArray) : Bool :=
+def likeMatch {σ : Type} [ByteSrc σ] (pat : ByteArray) (str : σ) (esc : Option ByteArray) : Bool :=
   go 0 0 (2 * pat.size + 2) == .yes
 where
   isEsc (p : Nat) : Bool :=
@@ -195,26 +205,26 @@ where
   go (p s : Nat) : Nat → Like
     | 0 => .no
     | fuel+1 =>
-      if rd pat p == 0 then (if rd str s == 0 then .yes else .no) else
+      if rd pat p == 0 then (if byteAt str s == 0 then .yes else .no) else
       let c := rd pat p
       let escaped := isEsc p
       if !escaped && c == 37 then -- %
         let p1 := p + 1
-        if rd pat p1 == 0 then .yes else anyFrom p1 (firstLit p1) s (str.size - s + 1) fuel
+        if rd pat p1 == 0 then .yes else anyFrom p1 (firstLit p1) s (byteSize str - s + 1) fuel
       else if !escaped && c == 95 then -- _
-        if rd str s == 0 then .abort else go (p + 1) (s + charLen str s) fuel
+        if byteAt str s == 0 then .abort else go (p + 1) (s + charLen str s) fuel
       else
         -- a literal character, after the escape if there is one
         let lp := if escaped then p + escLen else p
         if rd pat lp == 0 then .no else
         let n := charLen pat lp
-        if rd str s == 0 then .abort
-        else if s + n ≤ str.size && bytesEq pat lp str s true n then go (lp + n) (s + n) fuel else .no
+        if byteAt str s == 0 then .abort
+        else if s + n ≤ byteSize str && bytesEq pat lp str s true n then go (lp + n) (s + n) fuel else .no
   termination_by fuel => (fuel, 0)
   /-- the first character start at or after `s` whose first byte (ASCII-folded) is `b`, or the string's end -/
   seek (b : UInt8) (s : Nat) : Nat → Nat
     | 0 => s
-    | k+1 => if rd str s == 0 || foldCase (rd str s) == b then s else seek b (s + charLen str s) k
+    | k+1 => if byteAt str s == 0 || foldCase (byteAt str s) == b then s else seek b (s + charLen str s) k
   /-- the first byte (ASCII-folded) of the literal the pattern at `p` starts with, if it starts with one -/
   firstLit (p : Nat) : Option UInt8 :=
     let c := rd pat p
@@ -227,30 +237,30 @@ where
     | k+1, fuel+1 =>
       match lit with
       | some b =>
-        let s' := seek b s (str.size - s)
-        if rd str s' == 0 then .abort else
+        let s' := seek b s (byteSize str - s)
+        if byteAt str s' == 0 then .abort else
         match go p s' fuel with
         | .no => anyFrom p lit (s' + charLen str s') k (fuel + 1)
         | r => r
       | none =>
         match go p s fuel with
-        | .no => if rd str s == 0 then .abort else anyFrom p lit (s + charLen str s) k (fuel + 1)
+        | .no => if byteAt str s == 0 then .abort else anyFrom p lit (s + charLen str s) k (fuel + 1)
         | r => r
   termination_by k fuel => (fuel, k)
 
 /-- The code point of the UTF-8 character at `i`. -/
-def codeAt (b : ByteArray) (i : Nat) : Nat :=
-  let c := (rd b i).toNat
+def codeAt {σ : Type} [ByteSrc σ] (b : σ) (i : Nat) : Nat :=
+  let c := (byteAt b i).toNat
   match charLen b i with
   | 1 => c
-  | 2 => (c &&& 0x1F) <<< 6 ||| ((rd b (i+1)).toNat &&& 0x3F)
-  | 3 => (c &&& 0x0F) <<< 12 ||| ((rd b (i+1)).toNat &&& 0x3F) <<< 6 ||| ((rd b (i+2)).toNat &&& 0x3F)
-  | _ => (c &&& 0x07) <<< 18 ||| ((rd b (i+1)).toNat &&& 0x3F) <<< 12 ||| ((rd b (i+2)).toNat &&& 0x3F) <<< 6
-          ||| ((rd b (i+3)).toNat &&& 0x3F)
+  | 2 => (c &&& 0x1F) <<< 6 ||| ((byteAt b (i+1)).toNat &&& 0x3F)
+  | 3 => (c &&& 0x0F) <<< 12 ||| ((byteAt b (i+1)).toNat &&& 0x3F) <<< 6 ||| ((byteAt b (i+2)).toNat &&& 0x3F)
+  | _ => (c &&& 0x07) <<< 18 ||| ((byteAt b (i+1)).toNat &&& 0x3F) <<< 12 ||| ((byteAt b (i+2)).toNat &&& 0x3F) <<< 6
+          ||| ((byteAt b (i+3)).toNat &&& 0x3F)
 
 /-- GLOB: `*`, `?`, `[...]` with ranges and `^` negation; case-sensitive. -/
-def globMatch (pat str : ByteArray) : Bool :=
-  go 0 0 (pat.size * (str.size + 1) + pat.size + str.size + 2)
+def globMatch {σ : Type} [ByteSrc σ] (pat : ByteArray) (str : σ) : Bool :=
+  go 0 0 (pat.size * (byteSize str + 1) + pat.size + byteSize str + 2)
 where
   /-- whether the class at `p` (after `[`) matches code point `c`, and the position after `]` -/
   cls (p : Nat) (c : Nat) : Option (Bool × Nat) :=
@@ -274,28 +284,40 @@ where
   go (p s : Nat) : Nat → Bool
     | 0 => false
     | fuel+1 =>
-      if rd pat p == 0 then rd str s == 0 else
+      if rd pat p == 0 then byteAt str s == 0 else
       let c := rd pat p
       if c == 42 then -- *
         let p1 := p + 1
         if rd pat p1 == 0 then true else
-        anyFrom p1 s (str.size - s + 1) fuel
+        anyFrom p1 s (byteSize str - s + 1) fuel
       else if c == 63 then -- ?
-        if rd str s == 0 then false else go (p + 1) (s + charLen str s) fuel
+        if byteAt str s == 0 then false else go (p + 1) (s + charLen str s) fuel
       else if c == 91 then -- [
-        if rd str s == 0 then false else
+        if byteAt str s == 0 then false else
         match cls (p + 1) (codeAt str s) with
         | some (true, p') => go p' (s + charLen str s) fuel
         | _ => false
       else
         let n := charLen pat p
-        if s + n ≤ str.size && bytesEq pat p str s false n then go (p + n) (s + n) fuel else false
+        if s + n ≤ byteSize str && bytesEq pat p str s false n then go (p + n) (s + n) fuel else false
   termination_by fuel => (fuel, 0)
   anyFrom (p s : Nat) : Nat → Nat → Bool
     | 0, _ => false
     | _, 0 => false
-    | k+1, fuel+1 => go p s fuel || (rd str s != 0 && anyFrom p (s + charLen str s) k (fuel + 1))
+    | k+1, fuel+1 => go p s fuel || (byteAt str s != 0 && anyFrom p (s + charLen str s) k (fuel + 1))
   termination_by k fuel => (fuel, k)
+
+/-- LIKE of a value: a text value without escaped bytes is matched in place, any other as its bytes. -/
+def likeValue (pat : ByteArray) (v : Value) (esc : Option ByteArray) : Bool :=
+  match v with
+  | .text s => if hasEsc s then likeMatch pat (textBytes s) esc else likeMatch pat s esc
+  | v => likeMatch pat v.toBytes esc
+
+/-- GLOB of a value, as `likeValue`. -/
+def globValue (pat : ByteArray) (v : Value) : Bool :=
+  match v with
+  | .text s => if hasEsc s then globMatch pat (textBytes s) else globMatch pat s
+  | v => globMatch pat v.toBytes
 
 /-! ## Scalar functions -/
 
