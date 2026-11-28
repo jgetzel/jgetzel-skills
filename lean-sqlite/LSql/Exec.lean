@@ -18,6 +18,105 @@ structure Err where
   pos : Option Nat := none
   deriving Inhabited
 
+def fuel0 : Nat := 100000
+
+/-! ## Statements compiled once -/
+
+/-- A table's scope for compiling expressions over one of its rows (columns, then the rowid, from slot 0). -/
+def tableScope (t : Table) (name : String := t.name) : Scope :=
+  { srcs := #[{ name, cols := t.names, affs := t.affs, colls := t.colls, base := 0, rowid := some t.cols.size }] }
+
+/-- An expression compiled once, to run on many rows. -/
+def cfn (e : CExpr) : CFn := e.compile (fun env q => runSel env q (fuel0 - 1)) (fuel0 - 1)
+
+/-- An index with its expressions compiled once per statement: `terms` are the key terms of an expression index
+(none: the column itself; an expression that does not compile is NULL), `holds` is a partial index's WHERE (an
+expression that does not compile never holds). -/
+structure PIdx extends Index where
+  terms : Array (Option CFn)
+  holds : Option CFn
+
+/-- An index of table `t` prepared (`s`: the schema its WHERE is compiled in). -/
+def PIdx.of (s : Schema) (t : Table) (ix : Index) : PIdx :=
+  let compiled (s : Schema) (e : Expr) : Option CFn :=
+    match (compileExpr { schema := s, scopes := [tableScope t] } e fuel0).run {} with
+    | .ok ((ce, _, _), _) => some (cfn ce)
+    | .error _ => none
+  { toIndex := ix
+    terms := if !ix.hasExprs then #[] else ix.cols.mapIdx fun i _ => (ix.exprs.getD i none).map fun e =>
+      (compiled {} e).getD fun _ => .ok .null
+    holds := ix.pred.map fun w => (compiled s w).getD fun _ => .ok (.int 0) }
+
+/-- The indexes of table `t`, prepared. -/
+def prepIdxs (s : Schema) (t : Table) : Array PIdx := (s.indexesOfTable t).map (PIdx.of s t)
+
+/-- Where an INSERT's rows come from: DEFAULT VALUES, literal rows, or a query run when the statement runs. -/
+inductive PSrc where
+  | defaults
+  | rows (rs : Array (Array Value))
+  | query (cq : CSel)
+
+/-- An INSERT compiled once: what it reads from the schema and the scopes, before it reads any row. -/
+structure PInsert where
+  conflict : Conflict
+  t : Table
+  /-- the table is a view's result columns (INSTEAD OF triggers) -/
+  isView : Bool
+  idxs : Array PIdx
+  cks : Array (Except String CFn)
+  /-- the named columns (none: the rowid), or empty when it names none -/
+  targets : Array (Option Nat)
+  named : Bool
+  src : PSrc
+  /-- each UPSERT clause with its DO UPDATE's WHERE and SET expressions (a compile error surfaces at its first use) -/
+  upserts : List (Upsert × Option (Option (Except String CFn) × List (String × Except String CFn)))
+  /-- each column's DEFAULT, when the statement reads them (named columns, or OR REPLACE) -/
+  dflts : Array (Option (Except CErr CFn))
+  hasTriggers : Bool
+
+/-- How an UPDATE or DELETE finds its rows: the rowids a one-table core finds (update.c and delete.c's one pass), or
+the rows a query reads, each its columns then its rowid (`pad`: the query has no rowid, a NULL is added). -/
+inductive PRows where
+  | rowids (core : CCore)
+  | query (cq : CSel) (pad : Bool)
+
+/-- An UPDATE compiled once. -/
+structure PUpdate where
+  conflict : Conflict
+  t : Table
+  isView : Bool
+  idxs : Array PIdx
+  cks : Array (Except String CFn)
+  /-- each column's DEFAULT, under OR REPLACE -/
+  dflts : Array (Option (Except CErr CFn))
+  /-- each SET's column (none: the rowid) and expression -/
+  targets : Array (Option Nat × CExpr)
+  cfs : Array CFn
+  hasTriggers : Bool
+  setCols : List String
+  rows : PRows
+
+/-- A DELETE compiled once (`rows` none: every row, the trees cleared). -/
+structure PDelete where
+  t : Table
+  isView : Bool
+  idxs : Array PIdx
+  hasTriggers : Bool
+  rows : Option PRows
+
+/-- A trigger body's statement compiled once. -/
+inductive PStmt where
+  | select (cq : CSel) (names : Array String)
+  | insert (p : PInsert)
+  | update (p : PUpdate)
+  | delete (p : PDelete)
+
+/-- A trigger program compiled once per statement (sqlite's TriggerPrg): its WHEN, and each body statement with its
+compiled form (none: run as written, so one that does not compile raises its error when it runs). -/
+structure TrigProg where
+  «when» : Option (Except CErr CFn)
+  body : List (Stmt × Option PStmt)
+
 structure DB where
   pager : Pager := {}
   schema : Schema := {}
@@ -41,6 +140,8 @@ structure DB where
   nowMs : Option Int64 := none
   /-- RETURNING: the rows the statement writes (new rows; deleted ones for DELETE), when collecting -/
   returned : Option (Array Row) := none
+  /-- the trigger programs compiled in this statement, by trigger name -/
+  progs : List (String × TrigProg) := []
   deriving Inhabited
 
 /-- A database value with nothing in it, left in a field while the real one is out being changed (a closed constant). -/
@@ -65,8 +166,6 @@ def liftC {α : Type} : Except CErr α → XS α
 def liftR {α : Type} : Except String α → XS α
   | .ok a => pure a
   | .error e => runErr e
-
-def fuel0 : Nat := 100000
 
 namespace DB
 
@@ -97,11 +196,18 @@ def query (q : Select) : XS Result := do
   let rows ← liftR (runSel (← envX) cq fuel0)
   return { names, rows }
 
-/-- Evaluates a constant expression (a DEFAULT). -/
-def evalConst (e : Expr) : XS Value := do
+/-- An expression compiled once in the statement's scopes, to run each time it is reached (a DEFAULT, a WHEN). -/
+def compileConst (e : Expr) : XS (Except CErr CFn) := do
   let s ← schemaX
-  let ((c, _, _), _) ← liftC ((compileExpr { schema := s, scopes := ← scopesX } e fuel0).run {})
-  liftR (eval (← envX) c fuel0)
+  return ((compileExpr { schema := s, scopes := ← scopesX } e fuel0).run {}).map fun ((c, _, _), _) => cfn c
+
+/-- Runs an expression `compileConst` compiled (raising its compile error, if it had one). -/
+def runConst (c : Except CErr CFn) : XS Value := do
+  liftR ((← liftC c) (← envX))
+
+/-- Each column's DEFAULT compiled (none: it has none). -/
+def prepDefaults (t : Table) : XS (Array (Option (Except CErr CFn))) :=
+  t.cols.mapM fun c => c.default.mapM compileConst
 
 /-! ## sqlite_schema -/
 
@@ -140,34 +246,6 @@ def updateSchemaRow (n : String) (f : Array Value → Array Value) (temp : Bool 
   bumpCookie
 
 /-! ## Rows: affinity, constraints, index entries -/
-
-/-- A table's scope for compiling expressions over one of its rows (columns, then the rowid, from slot 0). -/
-def tableScope (t : Table) (name : String := t.name) : Scope :=
-  { srcs := #[{ name, cols := t.names, affs := t.affs, colls := t.colls, base := 0, rowid := some t.cols.size }] }
-
-/-- An expression compiled once, to run on many rows. -/
-def cfn (e : CExpr) : CFn := e.compile (fun env q => runSel env q (fuel0 - 1)) (fuel0 - 1)
-
-/-- An index with its expressions compiled once per statement: `terms` are the key terms of an expression index
-(none: the column itself; an expression that does not compile is NULL), `holds` is a partial index's WHERE (an
-expression that does not compile never holds). -/
-structure PIdx extends Index where
-  terms : Array (Option CFn)
-  holds : Option CFn
-
-/-- An index of table `t` prepared (`s`: the schema its WHERE is compiled in). -/
-def PIdx.of (s : Schema) (t : Table) (ix : Index) : PIdx :=
-  let compiled (s : Schema) (e : Expr) : Option CFn :=
-    match (compileExpr { schema := s, scopes := [tableScope t] } e fuel0).run {} with
-    | .ok ((ce, _, _), _) => some (cfn ce)
-    | .error _ => none
-  { toIndex := ix
-    terms := if !ix.hasExprs then #[] else ix.cols.mapIdx fun i _ => (ix.exprs.getD i none).map fun e =>
-      (compiled {} e).getD fun _ => .ok .null
-    holds := ix.pred.map fun w => (compiled s w).getD fun _ => .ok (.int 0) }
-
-/-- The indexes of table `t`, prepared. -/
-def prepIdxs (s : Schema) (t : Table) : Array PIdx := (s.indexesOfTable t).map (PIdx.of s t)
 
 /-- An index's key values for a row: its columns, or its expressions evaluated on the row. -/
 def keyVals (ix : PIdx) (row : Row) : Array Value :=
@@ -294,7 +372,7 @@ def checkRow (t : Table) (cks : Array (Except String CFn)) (frame : Row) : XS (O
   return none
 
 /-- Writes one row (constraints checked, conflicts resolved); false when OR IGNORE skipped it. -/
-def writeRow (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (row : Row) (rowid : Int64) (conflict : Conflict)
+def writeRow (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (dflts : Array (Option (Except CErr CFn))) (row : Row) (rowid : Int64) (conflict : Conflict)
     (oldRowid : Option Int64) (old : Option OldRow := none) : XS Bool := do
   -- NOT NULL
   let mut row := row
@@ -304,8 +382,8 @@ def writeRow (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (
       match conflict with
       | .ignore => return false
       | .replace =>
-        match c.default with
-        | some d => row := row.setIfInBounds i (Value.applyAff c.aff (← evalConst d))
+        match dflts.getD i none with
+        | some d => row := row.setIfInBounds i (Value.applyAff c.aff (← runConst d))
         | none => runErr s!"NOT NULL constraint failed: {t.name}.{c.name}"
       | _ => runErr s!"NOT NULL constraint failed: {t.name}.{c.name}"
   if let some msg := t.strictError row then runErr msg
@@ -386,20 +464,20 @@ def setChanges (n : Int64) : XS Unit :=
 
 /-! ## Statements -/
 
-/-- The rows a WHERE clause selects from a table: each row's columns then its rowid (NULL in a WITHOUT ROWID table). -/
-def matching (t : Table) (name : String) (w : Option Expr) : XS (Array Row) := do
+/-- The query of the rows a WHERE clause selects from a table: each row's columns then its rowid (none in a WITHOUT ROWID
+table). -/
+def matchingQ (t : Table) (name : String) (w : Option Expr) : XS CSel := do
   let cols := t.cols.toList.map fun c => ResultCol.expr (.col (some name) c.name false) none c.name
   let cols := if t.withoutRowid then cols else cols ++ [ResultCol.expr (.col (some name) "rowid" false) none "rowid"]
   let qn := "\x00" ++ (if t.temp then "temp" else "main") ++ "\x00" ++ t.name
   let q : Select := .mk false [] (.select false cols (some (.table qn (some name))) [] w [] none) [] [] none none
   let (cq, _, _) ← compileQ q
-  let rows ← liftR (runSel (← envX) cq fuel0)
-  return if t.withoutRowid then rows.map (·.push .null) else rows
+  return cq
 
-/-- The rowids of the rows a WHERE clause selects from a rowid table, found as sqlite's update.c and delete.c find them:
-the WHERE's conjuncts compiled over the table's row, an access path chosen from them, and the one-table core run; no
-SELECT is built and compiled. -/
-def matchingRowids (t : Table) (name : String) (w : Option Expr) : XS (Array Int64) := do
+/-- The core that finds the rowids of the rows a WHERE clause selects from a rowid table, as sqlite's update.c and
+delete.c find them: the WHERE's conjuncts compiled over the table's row and an access path chosen from them; no SELECT is
+built and compiled. -/
+def rowidsCore (t : Table) (name : String) (w : Option Expr) : XS CCore := do
   let s ← schemaX
   let n := t.cols.size
   let cenv : CEnv := { schema := s, scopes := tableScope t name :: (← scopesX) }
@@ -409,12 +487,20 @@ def matchingRowids (t : Table) (name : String) (w : Option Expr) : XS (Array Int
   let (pre, onRow) := conds.partition fun c => let (ss, corr) := slotsOf c 64; ss.isEmpty && !corr
   let src := CSource.table t.root n t.ipk t.reals t.defaults 0
     (chooseAccess t (s.indexesOfTable t) 0 conds) false false #[] #[]
-  let core := CCore.select #[src] pre #[onRow] #[] #[] none #[.col 0 n] #[.binary] #[] #[] false false (n + 1) #[]
+  return CCore.select #[src] pre #[onRow] #[] #[] none #[.col 0 n] #[.binary] #[] #[] false false (n + 1) #[]
+
+/-- The rowids `rowidsCore`'s core finds. -/
+def runRowids (core : CCore) : XS (Array Int64) := do
   let env ← envX
   let core ← liftR (hoistCore env core fuel0)
   liftR (runCore env none none core fuel0 #[] (fun _ => false) fun ks r => do
     let (r, _) ← r ()
     pure (match r.getD 0 .null with | .int k => ks.push k | _ => ks))
+
+/-- The rows a `PRows.query` reads. -/
+def runRowsQ (cq : CSel) (pad : Bool) : XS (Array Row) := do
+  let rows ← liftR (runSel (← envX) cq fuel0)
+  return if pad then rows.map (·.push .null) else rows
 
 /-! ### WITHOUT ROWID tables: an index-format tree whose records are the key columns, then the rest -/
 
@@ -442,7 +528,7 @@ def pkMsg (t : Table) : String :=
   "UNIQUE constraint failed: " ++ ", ".intercalate (t.pkCols.toList.map fun c => s!"{t.name}.{(t.cols.getD c default).name}")
 
 /-- Writes a row of a WITHOUT ROWID table, as writeRow does a rowid table's; `old`: the row it replaces. -/
-def writeRowWor (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (row : Row) (conflict : Conflict) (old : Option Row) : XS Bool := do
+def writeRowWor (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (dflts : Array (Option (Except CErr CFn))) (row : Row) (conflict : Conflict) (old : Option Row) : XS Bool := do
   let mut row := row
   for i in [0:t.cols.size] do
     let c := t.cols.getD i default
@@ -450,8 +536,8 @@ def writeRowWor (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)
       match conflict with
       | .ignore => return false
       | .replace =>
-        match c.default with
-        | some d => row := row.setIfInBounds i (Value.applyAff c.aff (← evalConst d))
+        match dflts.getD i none with
+        | some d => row := row.setIfInBounds i (Value.applyAff c.aff (← runConst d))
         | none => runErr s!"NOT NULL constraint failed: {t.name}.{c.name}"
       | _ => runErr s!"NOT NULL constraint failed: {t.name}.{c.name}"
   if let some msg := t.strictError row then runErr msg
@@ -915,6 +1001,191 @@ def dropColumn (tn c : String) : XS Unit := do
   updateSchemaRow t.name (fun vs => vs.setIfInBounds 4 (.text sql)) t.temp
   reloadSchema
 
+/-- The rows of a VALUES list whose terms are all literals and whose rows are as wide as the first: what running it gives. -/
+def literalRows (vs : List (List Expr)) : Option (Array (Array Value)) :=
+  match vs with
+  | [] => none
+  | r0 :: _ =>
+    vs.toArray.mapM fun r => do
+      let row ← r.toArray.mapM fun | .lit v => some v | _ => none
+      if row.size == r0.length then some row else none
+
+/-- Compiles an INSERT (`insert` runs it). -/
+def prepInsert (conflict : Conflict) (qtn : String) (cols : List String) (src : InsertSource) (upserts : List Upsert) :
+    XS PInsert := do
+  let tn := (Schema.splitQual qtn).2
+  let s ← schemaX
+  if nameEq tn "sqlite_schema" || nameEq tn "sqlite_master" then parseErr s!"table {tn} may not be modified"
+  let (t, isView) ← match s.table? qtn with
+    | some t => pure (t, false)
+    | none => match s.view? qtn with
+      | some v =>
+        if !s.triggers.any (fun tr => nameEq tr.table tn && tr.timing == .insteadOf && tr.event == .insert) then
+          parseErr s!"cannot modify {tn} because it is a view"
+        pure (← viewTable v, true)
+      | none => parseErr s!"no such table: {tn}"
+  let idxs := prepIdxs s t
+  let cks := prepChecks s t
+  if !upserts.isEmpty && t.withoutRowid then parseErr "lean-sqlite: upsert on a WITHOUT ROWID table is not supported"
+  -- target columns (a "rowid" column names the rowid itself)
+  -- (none given: the values are in column order, and the targets are not built)
+  let targets : Array (Option Nat) ← if cols.isEmpty then pure #[] else
+    cols.toArray.mapM fun c => match t.colIndex? c with
+      | some i => pure (some i)
+      | none => if !t.withoutRowid && !isView && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none
+        else parseErr s!"table {t.name} has no column named {c}"
+  let src : PSrc ← match src with
+    | .defaults => pure .defaults
+    | .values vs => do
+      match literalRows vs with
+      | some rs => pure (.rows rs)
+      | none =>
+        let (cq, _, _) ← compileQ (.mk false [] (.values vs) [] [] none none)
+        pure (.query cq)
+    | .select q => do
+      let (cq, _, _) ← compileQ q
+      pure (.query cq)
+  -- each DO UPDATE's WHERE and SET expressions
+  let upsP : List (Upsert × Option (Option (Except String CFn) × List (String × Except String CFn))) ← do
+    let sc ← scopesX
+    let upScope : Scope := { srcs := #[
+      { name := t.name, cols := t.names, affs := t.affs, colls := t.colls, base := 0, rowid := some t.cols.size },
+      -- excluded.* only by its name: an unqualified column is the table's
+      { name := "excluded", cols := t.names, affs := t.affs, colls := t.colls,
+        base := t.cols.size + 1, rowid := some (2 * t.cols.size + 1), hidden := t.cols.map fun _ => true }] }
+    let comp (e : Expr) : Except String CFn :=
+      ((compileExpr { schema := s, scopes := upScope :: sc } e fuel0).run {}).mapError (·.msg) |>.map fun ((ce, _, _), _) => cfn ce
+    pure (upserts.map fun u => (u, u.update.map fun (sets, w) => (w.map comp, sets.map fun (c, e) => (c, comp e))))
+  let direct := cols.isEmpty && !(src matches .defaults)
+  return { conflict, t, isView, idxs, cks, targets := if src matches .defaults then #[] else targets, named := !cols.isEmpty,
+           src, upserts := upsP, dflts := ← if !direct || conflict == .replace then prepDefaults t else pure #[],
+           hasTriggers := s.triggers.any (nameEq ·.table t.name) }
+
+/-- Compiles an UPDATE (`update` runs it). -/
+def prepUpdate (conflict : Conflict) (qtn : String) (alias : Option String) (sets : List (String × Expr)) (w : Option Expr) :
+    XS PUpdate := do
+  let tn := (Schema.splitQual qtn).2
+  let nm := alias.getD (Schema.splitQual qtn).2
+  let s ← schemaX
+  let (t, isView) ← match s.table? qtn with
+    | some t => pure (t, false)
+    | none => match s.view? qtn with
+      | some v =>
+        if !s.triggers.any (fun tr => nameEq tr.table tn && tr.timing == .insteadOf && tr.event matches .update _) then
+          parseErr s!"cannot modify {tn} because it is a view"
+        pure (← viewTable v, true)
+      | none => parseErr s!"no such table: {tn}"
+  let idxs := prepIdxs s t
+  let cks := prepChecks s t
+  let sc ← scopesX
+  let targets ← sets.toArray.mapM fun (c, e) => do
+    let tgt ← match t.colIndex? c with
+      | some i => pure (some i)
+      | none => if !t.withoutRowid && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none else parseErr s!"no such column: {c}"
+    let ((ce, _, _), _) ← liftC ((compileExpr { schema := s, scopes := tableScope t nm :: sc } e fuel0).run {})
+    pure (tgt, ce)
+  let hasTriggers := s.triggers.any (nameEq ·.table t.name)
+  let rows ← if !isView && !t.withoutRowid && !hasTriggers && conflict != .replace then
+      pure (PRows.rowids (← rowidsCore t nm w))
+    else if isView then do
+      let q : Select := .mk false [] (.select false [.star] (some (.table tn (some nm))) [] w [] none) [] [] none none
+      let (cq, _, _) ← compileQ q
+      pure (.query cq true)
+    else pure (.query (← matchingQ t nm w) t.withoutRowid)
+  return { conflict, t, isView, idxs, cks, targets, cfs := targets.map (cfn ·.2), hasTriggers, setCols := sets.map (·.1), rows,
+           dflts := ← if conflict == .replace then prepDefaults t else pure #[] }
+
+/-- Compiles a DELETE (`delete` runs it). -/
+def prepDelete (qtn : String) (alias : Option String) (w : Option Expr) : XS PDelete := do
+  let tn := (Schema.splitQual qtn).2
+  let nm := alias.getD (Schema.splitQual qtn).2
+  let s ← schemaX
+  let (t, isView) ← match s.table? qtn with
+    | some t => pure (t, false)
+    | none => match s.view? qtn with
+      | some v =>
+        if !s.triggers.any (fun tr => nameEq tr.table tn && tr.timing == .insteadOf && tr.event == .delete) then
+          parseErr s!"cannot modify {tn} because it is a view"
+        pure (← viewTable v, true)
+      | none => parseErr s!"no such table: {tn}"
+  let idxs := prepIdxs s t
+  let hasTriggers := s.triggers.any (nameEq ·.table t.name)
+  -- the whole table: its trees are cleared; else only the rowids, and of each row only its index keys
+  let rows ← if w.isNone && !hasTriggers && !isView then pure none
+    else if !hasTriggers && !isView && !t.withoutRowid && (← get).returned.isNone then
+      pure (some (PRows.rowids (← rowidsCore t nm w)))
+    else if isView then do
+      let q : Select := .mk false [] (.select false [.star] (some (.table tn (some nm))) [] w [] none) [] [] none none
+      let (cq, _, _) ← compileQ q
+      pure (some (.query cq true))
+    else pure (some (.query (← matchingQ t nm w) t.withoutRowid))
+  return { t, isView, idxs, hasTriggers, rows }
+
+/-- Compiles a trigger body's statement (none: one kept as written). -/
+def prepStmt : Stmt → XS (Option PStmt)
+  | .select q => do
+    let (cq, names, _) ← compileQ q
+    return some (.select cq names)
+  | .insert c t cols src ups => return some (.insert (← prepInsert c t cols src ups))
+  | .update c t a sets w => return some (.update (← prepUpdate c t a sets w))
+  | .delete t a w => return some (.delete (← prepDelete t a w))
+  | _ => return none
+
+/-- Trigger `tr`'s program, compiled the first time it fires in a statement (in its NEW and OLD scope); a body statement
+that does not compile is kept as written. -/
+def trigProg (tr : Trigger) : XS TrigProg := do
+  if let some p := (← get).progs.lookup tr.name then return p
+  let «when» ← tr.when.mapM compileConst
+  let body ← tr.body.mapM fun st => do return (st, ← tryCatch (prepStmt st) fun _ => pure none)
+  let p : TrigProg := { «when», body }
+  modify fun db => { db with progs := (tr.name, p) :: db.progs }
+  return p
+
+/-- An UPDATE that finds its rows by rowid (no triggers, not OR REPLACE): each row decodes the columns the statement
+reads; its new record copies the others. -/
+def updateRowids (p : PUpdate) (core : CCore) : XS Unit := do
+  let t := p.t
+  let targets := p.targets
+  let ks ← runRowids core
+  if ks.size ≤ 1 then modPager Pager.noStmtJournal
+  let n := t.cols.size
+  let all := !t.checks.isEmpty || t.strict || (← get).returned.isSome
+  let need := if all then Array.replicate (n + 1) true else
+    let need := Array.zipWith (· || ·) (neededSlots (n + 1) (targets.map (·.2))) (indexNeed t p.idxs)
+    let need := t.cols.size.fold (fun i _ m => if (t.cols.getD i default).notNull then m.setIfInBounds i true else m) need
+    need.setIfInBounds n true
+  let changed := targets.foldl (fun m (tgt, _) => match tgt with
+    | some i => m.setIfInBounds i true
+    | none => m) (Array.replicate n false)
+  let mut cnt : Int64 := 0
+  for oldRowid in ks do
+    let some c := BTree.tableFind (← get).pager t.root oldRowid | continue
+    let old := tableRowNeed t need oldRowid c.payload
+    let mut row := old.extract 0 n
+    let mut nr := oldRowid
+    for ((tgt, _), cf) in targets.zip p.cfs do
+      let v ← liftR (cf ((← envX).push old))
+      match tgt with
+      | some i =>
+        let v := Value.applyAff (t.cols.getD i default).aff v
+        if t.ipk == some i then
+          match toRowid? v with
+          | some k => nr := k
+          | none => if v.isNull then nr := ← newRowid t else runErr "datatype mismatch"
+        else row := row.setIfInBounds i v
+      | none =>
+        match toRowid? v with
+        | some k => nr := k
+        | none => runErr "datatype mismatch"
+    let row2 := match t.ipk with | some i => row.setIfInBounds i (.int nr) | none => row
+    try
+      let o : OldRow := { row := old, record := c.payload, fields := recordFields c.payload, changed }
+      if ← writeRow t p.idxs p.cks p.dflts row2 nr p.conflict (some oldRowid) (some o) then
+        cnt := cnt + 1
+        if all then noteRow (row2.push (.int nr))
+    catch e => if isIgnore e then pure () else throw e
+  setChanges cnt
+
 mutual
 /-- Runs the triggers of table `t` for one row: each whose timing and event match, and whose WHEN holds, runs its
 statements with NEW and OLD bound (a trigger already running does not fire again). -/
@@ -932,87 +1203,40 @@ def fire (tm : TriggerTiming) (ev : TriggerEvent) (t : Table) (newRow oldRow : O
       let (sTrig, sFiring, sRet) ← modifyGet fun db => ((db.trig, db.firing, db.returned),
         { db with trig := some ctx, firing := tr.name :: db.firing, returned := none })
       try
-        let go ← match tr.when with
+        let prog ← trigProg tr
+        let go ← match prog.when with
           | none => pure true
-          | some w => do let v ← evalConst w; pure (v.truth? == some true)
+          | some w => do let v ← runConst w; pure (v.truth? == some true)
         if go then
-          for st in tr.body do
-            let _ ← exec1 st fuel
+          for (st, p) in prog.body do
+            let _ ← match p with
+              | some p => execP p fuel
+              | none => exec1 st fuel
         modify fun db => { db with trig := sTrig, firing := sFiring, returned := sRet }
       catch e =>
         modify fun db => { db with trig := sTrig, firing := sFiring, returned := sRet }
         -- the trigger's own text, not the statement's: its errors point nowhere in it
         throw { e with pos := none }
 
-/-- The rows of a VALUES list whose terms are all literals and whose rows are as wide as the first: what running it gives. -/
-def literalRows (vs : List (List Expr)) : Option (Array (Array Value)) :=
-  match vs with
-  | [] => none
-  | r0 :: _ =>
-    vs.toArray.mapM fun r => do
-      let row ← r.toArray.mapM fun | .lit v => some v | _ => none
-      if row.size == r0.length then some row else none
-
-def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : InsertSource) (upserts : List Upsert) :
-    Nat → XS Unit
+def insert (p : PInsert) : Nat → XS Unit
   | 0 => runErr "too many levels of trigger recursion"
   | fuel+1 => do
-  let tn := (Schema.splitQual qtn).2
-  let s ← schemaX
-  if nameEq tn "sqlite_schema" || nameEq tn "sqlite_master" then parseErr s!"table {tn} may not be modified"
-  let (t, isView) ← match s.table? qtn with
-    | some t => pure (t, false)
-    | none => match s.view? qtn with
-      | some v =>
-        if !s.triggers.any (fun tr => nameEq tr.table tn && tr.timing == .insteadOf && tr.event == .insert) then
-          parseErr s!"cannot modify {tn} because it is a view"
-        pure (← viewTable v, true)
-      | none => parseErr s!"no such table: {tn}"
-  let idxs := prepIdxs s t
-  let cks := prepChecks s t
-  if !upserts.isEmpty && t.withoutRowid then parseErr "lean-sqlite: upsert on a WITHOUT ROWID table is not supported"
-  -- target columns (a "rowid" column names the rowid itself)
-  -- (none given: the values are in column order, and the targets are not built)
-  let direct := cols.isEmpty && !(src matches .defaults)
-  let targets : Array (Option Nat) ← if cols.isEmpty then pure #[] else
-    cols.toArray.mapM fun c => match t.colIndex? c with
-      | some i => pure (some i)
-      | none => if !t.withoutRowid && !isView && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none
-        else parseErr s!"table {t.name} has no column named {c}"
-  let rows ← match src with
+  let { conflict, t, isView, idxs, cks, targets, upserts := upsP, dflts, hasTriggers, .. } := p
+  let direct := !p.named && !(p.src matches .defaults)
+  let rows ← match p.src with
     | .defaults => pure #[#[]]
-    | .values vs => do
-      match literalRows vs with
-      | some rs => pure rs
-      | none =>
-        let (cq, _, _) ← compileQ (.mk false [] (.values vs) [] [] none none)
-        liftR (runSel (← envX) cq fuel0)
-    | .select q => do
-      let (cq, _, _) ← compileQ q
-      liftR (runSel (← envX) cq fuel0)
-  let targets := if src matches .defaults then #[] else targets
+    | .rows rs => pure rs
+    | .query cq => liftR (runSel (← envX) cq fuel0)
   let width := if direct then t.cols.size else targets.size
-  let hasTriggers := s.triggers.any (nameEq ·.table t.name)
-  -- each DO UPDATE's WHERE and SET expressions, compiled once (a compile error surfaces at its first use)
-  let upsP : List (Upsert × Option (Option (Except String CFn) × List (String × Except String CFn))) ← do
-    let sc ← scopesX
-    let upScope : Scope := { srcs := #[
-      { name := t.name, cols := t.names, affs := t.affs, colls := t.colls, base := 0, rowid := some t.cols.size },
-      -- excluded.* only by its name: an unqualified column is the table's
-      { name := "excluded", cols := t.names, affs := t.affs, colls := t.colls,
-        base := t.cols.size + 1, rowid := some (2 * t.cols.size + 1), hidden := t.cols.map fun _ => true }] }
-    let comp (e : Expr) : Except String CFn :=
-      ((compileExpr { schema := s, scopes := upScope :: sc } e fuel0).run {}).mapError (·.msg) |>.map fun ((ce, _, _), _) => cfn ce
-    pure (upserts.map fun u => (u, u.update.map fun (sets, w) => (w.map comp, sets.map fun (c, e) => (c, comp e))))
   -- one row can only fail before it writes: the statement journal is not needed
-  if rows.size ≤ 1 && !hasTriggers && upserts.isEmpty then modPager Pager.noStmtJournal
-  let defaults ← if direct then pure #[] else t.cols.mapM fun c => match c.default with
-    | some d => evalConst d
+  if rows.size ≤ 1 && !hasTriggers && upsP.isEmpty then modPager Pager.noStmtJournal
+  let defaults ← if direct then pure #[] else dflts.mapM fun d => match d with
+    | some d => runConst d
     | none => pure .null
   let mut n : Int64 := 0
   for r in rows do
     if r.size != width then
-      if cols.isEmpty then parseErr s!"table {t.name} has {t.cols.size} columns but {r.size} values were supplied"
+      if !p.named then parseErr s!"table {t.name} has {t.cols.size} columns but {r.size} values were supplied"
       else parseErr s!"{r.size} values for {targets.size} columns"
     let mut row := if direct then r else defaults
     let mut explicitRowid : Option Value := none
@@ -1029,7 +1253,7 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
     if t.withoutRowid then
       try
         fire .before .insert t (some (row.push .null)) none [] fuel
-        if ← writeRowWor t idxs cks (row.push .null) conflict none then
+        if ← writeRowWor t idxs cks dflts (row.push .null) conflict none then
           n := n + 1
           noteRow (row.push .null)
           fire .after .insert t (some (row.push .null)) none [] fuel
@@ -1049,7 +1273,7 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
     try
       fire .before .insert t (some row2) none [] fuel
       -- UPSERT: a conflict a clause names turns the insert into nothing, or into an update of the row it meets
-      let up ← if upserts.isEmpty then pure none else upsertConflict t idxs upsP (row2.extract 0 t.cols.size) rowid hasRowid
+      let up ← if upsP.isEmpty then pure none else upsertConflict t idxs upsP (row2.extract 0 t.cols.size) rowid hasRowid
       match up with
       | some ((_, pu), old) =>
         match pu with
@@ -1080,12 +1304,12 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
             let full := (match t.ipk with | some i => nrow.setIfInBounds i (.int nr) | none => nrow).push (.int nr)
             let setCols := sets.map (·.1)
             fire .before (.update setCols) t (some full) (some old) setCols fuel
-            if ← writeRow t idxs cks (full.extract 0 t.cols.size) nr .abort (some oldRowid) then
+            if ← writeRow t idxs cks dflts (full.extract 0 t.cols.size) nr .abort (some oldRowid) then
               n := n + 1
               noteRow full
               fire .after (.update setCols) t (some full) (some old) setCols fuel
       | none =>
-        if ← writeRow t idxs cks (row2.extract 0 t.cols.size) rowid conflict none then
+        if ← writeRow t idxs cks dflts (row2.extract 0 t.cols.size) rowid conflict none then
           modify fun db => { db with lastRowid := rowid }
           if t.autoinc then
             let db ← get
@@ -1097,81 +1321,14 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
     catch e => if isIgnore e then pure () else throw e
   setChanges n
 
-def update (conflict : Conflict) (qtn : String) (alias : Option String) (sets : List (String × Expr)) (w : Option Expr) : Nat → XS Unit
+def update (p : PUpdate) : Nat → XS Unit
   | 0 => runErr "too many levels of trigger recursion"
   | fuel+1 => do
-  let tn := (Schema.splitQual qtn).2
-  let nm := alias.getD (Schema.splitQual qtn).2
-  let s ← schemaX
-  let (t, isView) ← match s.table? qtn with
-    | some t => pure (t, false)
-    | none => match s.view? qtn with
-      | some v =>
-        if !s.triggers.any (fun tr => nameEq tr.table tn && tr.timing == .insteadOf && tr.event matches .update _) then
-          parseErr s!"cannot modify {tn} because it is a view"
-        pure (← viewTable v, true)
-      | none => parseErr s!"no such table: {tn}"
-  let idxs := prepIdxs s t
-  let cks := prepChecks s t
-  let sc ← scopesX
-  let targets ← sets.toArray.mapM fun (c, e) => do
-    let tgt ← match t.colIndex? c with
-      | some i => pure (some i)
-      | none => if !t.withoutRowid && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none else parseErr s!"no such column: {c}"
-    let ((ce, _, _), _) ← liftC ((compileExpr { schema := s, scopes := tableScope t nm :: sc } e fuel0).run {})
-    pure (tgt, ce)
-  let cfs := targets.map (cfn ·.2)
-  let hasTriggers := s.triggers.any (nameEq ·.table t.name)
-  if !isView && !t.withoutRowid && !hasTriggers && conflict != .replace then
-    -- each row decodes the columns the statement reads; its new record copies the others
-    let ks ← matchingRowids t nm w
-    if ks.size ≤ 1 then modPager Pager.noStmtJournal
-    let n := t.cols.size
-    let all := !t.checks.isEmpty || t.strict || (← get).returned.isSome
-    let need := if all then Array.replicate (n + 1) true else
-      let need := Array.zipWith (· || ·) (neededSlots (n + 1) (targets.map (·.2))) (indexNeed t idxs)
-      let need := t.cols.size.fold (fun i _ m => if (t.cols.getD i default).notNull then m.setIfInBounds i true else m) need
-      need.setIfInBounds n true
-    let changed := targets.foldl (fun m (tgt, _) => match tgt with
-      | some i => m.setIfInBounds i true
-      | none => m) (Array.replicate n false)
-    let mut cnt : Int64 := 0
-    for oldRowid in ks do
-      let some c := BTree.tableFind (← get).pager t.root oldRowid | continue
-      let old := tableRowNeed t need oldRowid c.payload
-      let mut row := old.extract 0 n
-      let mut nr := oldRowid
-      for ((tgt, _), cf) in targets.zip cfs do
-        let v ← liftR (cf ((← envX).push old))
-        match tgt with
-        | some i =>
-          let v := Value.applyAff (t.cols.getD i default).aff v
-          if t.ipk == some i then
-            match toRowid? v with
-            | some k => nr := k
-            | none => if v.isNull then nr := ← newRowid t else runErr "datatype mismatch"
-          else row := row.setIfInBounds i v
-        | none =>
-          match toRowid? v with
-          | some k => nr := k
-          | none => runErr "datatype mismatch"
-      let row2 := match t.ipk with | some i => row.setIfInBounds i (.int nr) | none => row
-      try
-        let o : OldRow := { row := old, record := c.payload, fields := recordFields c.payload, changed }
-        if ← writeRow t idxs cks row2 nr conflict (some oldRowid) (some o) then
-          cnt := cnt + 1
-          if all then noteRow (row2.push (.int nr))
-      catch e => if isIgnore e then pure () else throw e
-    setChanges cnt
-    return
-  let rows ← if isView then do
-      let q : Select := .mk false [] (.select false [.star] (some (.table tn (some nm))) [] w [] none) [] [] none none
-      let (cq, _, _) ← compileQ q
-      let rs ← liftR (runSel (← envX) cq fuel0)
-      pure (rs.map (·.push .null))
-    else matching t nm w
+  let { conflict, t, isView, idxs, cks, dflts, targets, cfs, hasTriggers, setCols, .. } := p
+  let rows ← match p.rows with
+    | .rowids core => return ← updateRowids p core
+    | .query cq pad => runRowsQ cq pad
   if rows.size ≤ 1 && !hasTriggers then modPager Pager.noStmtJournal
-  let setCols := sets.map (·.1)
   let mut n : Int64 := 0
   for old in rows do
     let oldRowid := match old.getD t.cols.size .null with | .int k => k | _ => 0
@@ -1208,8 +1365,8 @@ def update (conflict : Conflict) (qtn : String) (alias : Option String) (sets : 
           let fresh := row.zipIdx.map fun (v, i) => if setCol i then v else cur.getD i .null
           let fresh2 := match t.ipk with | some i => fresh.setIfInBounds i (.int nr) | none => fresh
           let newFull := fresh2.push (if t.withoutRowid then .null else .int nr)
-          let wrote ← if t.withoutRowid then writeRowWor t idxs cks newFull conflict (some old)
-            else writeRow t idxs cks fresh2 nr conflict (some oldRowid)
+          let wrote ← if t.withoutRowid then writeRowWor t idxs cks dflts newFull conflict (some old)
+            else writeRow t idxs cks dflts fresh2 nr conflict (some oldRowid)
           if wrote then
             n := n + 1
             noteRow newFull
@@ -1217,44 +1374,28 @@ def update (conflict : Conflict) (qtn : String) (alias : Option String) (sets : 
     catch e => if isIgnore e then pure () else throw e
   setChanges n
 
-def delete (qtn : String) (alias : Option String) (w : Option Expr) : Nat → XS Unit
+def delete (p : PDelete) : Nat → XS Unit
   | 0 => runErr "too many levels of trigger recursion"
   | fuel+1 => do
-  let tn := (Schema.splitQual qtn).2
-  let nm := alias.getD (Schema.splitQual qtn).2
-  let s ← schemaX
-  let (t, isView) ← match s.table? qtn with
-    | some t => pure (t, false)
-    | none => match s.view? qtn with
-      | some v =>
-        if !s.triggers.any (fun tr => nameEq tr.table tn && tr.timing == .insteadOf && tr.event == .delete) then
-          parseErr s!"cannot modify {tn} because it is a view"
-        pure (← viewTable v, true)
-      | none => parseErr s!"no such table: {tn}"
-  let idxs := prepIdxs s t
-  let hasTriggers := s.triggers.any (nameEq ·.table t.name)
-  if w.isNone && !hasTriggers && !isView then
-    -- the whole table: clear its trees
-    let p := (← get).pager
-    let n : Int64 := if t.withoutRowid then BTree.foldIndex p t.root 0 fun n _ => n + 1
-      else BTree.foldTable p t.root 0 fun n _ _ => n + 1
-    modPager fun p => idxs.foldl (fun p ix => BTree.clear p ix.root) (BTree.clear p t.root)
-    setChanges n
-    return
-  if !hasTriggers && !isView && !t.withoutRowid && (← get).returned.isNone then
-    -- only the rowids, and of each row only its index keys
-    let ks ← matchingRowids t nm w
-    modPager Pager.noStmtJournal
-    let need := indexNeed t idxs
-    modPager fun p => ks.foldl (fun p k => deleteRowN need idxs t k p) p
-    setChanges ks.size.toInt64
-    return
-  let rows ← if isView then do
-      let q : Select := .mk false [] (.select false [.star] (some (.table tn (some nm))) [] w [] none) [] [] none none
-      let (cq, _, _) ← compileQ q
-      let rs ← liftR (runSel (← envX) cq fuel0)
-      pure (rs.map (·.push .null))
-    else matching t nm w
+  let { t, isView, idxs, hasTriggers, .. } := p
+  let rows ← match p.rows with
+    | none =>
+      -- the whole table: clear its trees
+      let p := (← get).pager
+      let n : Int64 := if t.withoutRowid then BTree.foldIndex p t.root 0 fun n _ => n + 1
+        else BTree.foldTable p t.root 0 fun n _ _ => n + 1
+      modPager fun p => idxs.foldl (fun p ix => BTree.clear p ix.root) (BTree.clear p t.root)
+      setChanges n
+      return
+    | some (.rowids core) =>
+      -- only the rowids, and of each row only its index keys
+      let ks ← runRowids core
+      modPager Pager.noStmtJournal
+      let need := indexNeed t idxs
+      modPager fun p => ks.foldl (fun p k => deleteRowN need idxs t k p) p
+      setChanges ks.size.toInt64
+      return
+    | some (.query cq pad) => runRowsQ cq pad
   modify fun db => { db with returned := db.returned.map (· ++ rows) }
   if !hasTriggers then
     -- deleting cannot fail
@@ -1301,8 +1442,18 @@ def createTableAs (n : String) (ine : Bool) (q : Select) : Nat → XS Unit
     (({ name := nm, type := typeOf a } : ColumnDef), quoteName nm ++ (if typeOf a == "" then "" else " " ++ typeOf a))
   let sql := s!"CREATE TABLE {quoteName n}(" ++ ",".intercalate (defs.map (·.2)) ++ ")"
   createTable n false (defs.map (·.1)) [] false sql
-  unless rows.isEmpty do insert .abort n [] (.values (rows.toList.map fun r => r.toList.map Expr.lit)) [] fuel
+  unless rows.isEmpty do insert (← prepInsert .abort n [] (.values (rows.toList.map fun r => r.toList.map Expr.lit)) []) fuel
   setChanges 0
+
+/-- Runs a compiled statement, as `exec1` runs it as written. -/
+def execP (p : PStmt) : Nat → XS Result
+  | 0 => runErr "too many levels of trigger recursion"
+  | fuel+1 => do
+  match p with
+  | .select cq names => return { names, rows := ← liftR (runSel (← envX) cq fuel0) }
+  | .insert p => insert p fuel; return {}
+  | .update p => update p fuel; return {}
+  | .delete p => delete p fuel; return {}
 
 /-- Runs one statement (`fuel`: how deep triggers may nest). -/
 def exec1 (st : Stmt) : Nat → XS Result
@@ -1310,9 +1461,9 @@ def exec1 (st : Stmt) : Nat → XS Result
   | fuel+1 => do
   match st with
   | .select q => query q
-  | .insert c t cols src ups => insert c t cols src ups fuel; return {}
-  | .update c t a sets w => update c t a sets w fuel; return {}
-  | .delete t a w => delete t a w fuel; return {}
+  | .insert c t cols src ups => insert (← prepInsert c t cols src ups) fuel; return {}
+  | .update c t a sets w => update (← prepUpdate c t a sets w) fuel; return {}
+  | .delete t a w => delete (← prepDelete t a w) fuel; return {}
   | .createTable n ine cols cons wr sql => createTable n ine cols cons wr sql; return {}
   | .createTableAs n ine q => createTableAs n ine q fuel; return {}
   | .createIndex n tn cols unique ine pred sql =>
@@ -1458,8 +1609,8 @@ def runStmt (db : DB) (s : Stmt) : DB × Except Err Result × Bool :=
   | s =>
     let inTxn := db.inTxn
     let sch0 := db.schema
-    -- (outside a transaction, beginAutocommit also starts the statement journal)
-    let db := { db with pager := if inTxn then db.pager.beginStmt else db.pager.beginAutocommit }
+    -- (outside a transaction, beginAutocommit also starts the statement journal); no trigger program is compiled yet
+    let db := { db with pager := if inTxn then db.pager.beginStmt else db.pager.beginAutocommit, progs := [] }
     match (exec1 s 64).run db with
     | .ok r db =>
       let writes := match s with | .select _ => false | .pragma _ none => false | _ => true
