@@ -146,8 +146,8 @@ abbrev CTruth := Env → EM (Option Bool)
 abbrev CPred := Env → EM Bool
 abbrev CFnJ := Env → EM (Value × Bool)
 
-/-- How compiled code runs a subquery. -/
-abbrev SubRun := Env → CSel → EM (Array Row)
+/-- How compiled code runs a subquery: given it once where the expression is compiled, its runner for each row. -/
+abbrev SubRun := CSel → Env → EM (Array Row)
 
 /-- A scalar function, resolved from its name once per call site. -/
 abbrev ScalarFn := Env → Array Value → EM Value
@@ -1090,18 +1090,23 @@ def compileE (sub : SubRun) : CExpr → Nat → CFn
       return if hasNull then .null else boolV neg
   | .inSel x q neg aff coll _ =>
     let fx := compileE sub x fuel
+    let run := sub q
     fun env => do
       let v ← fx env
       if v.isNull then return .null
-      let rows ← sub env q
+      let rows ← run env
       return match inValues aff coll v (rows.map (·.getD 0 .null)) with
         | some true => boolV (!neg)
         | none => .null
         | some false => boolV neg
-  | .exists q neg _ => fun env => do return boolV ((← sub env q).isEmpty == neg)
-  | .scalar q _ => fun env => do
-    let rows ← sub env q
-    return ((rows[0]?).bind (·[0]?)).getD .null
+  | .exists q neg _ =>
+    let run := sub q
+    fun env => do return boolV ((← run env).isEmpty == neg)
+  | .scalar q _ =>
+    let run := sub q
+    fun env => do
+      let rows ← run env
+      return ((rows[0]?).bind (·[0]?)).getD .null
   | .matchE op x pat esc neg =>
     let fx := compileE sub x fuel
     let generic : CFn :=
@@ -1145,9 +1150,10 @@ def compileE (sub : SubRun) : CExpr → Nat → CFn
     fun env => do return boolV ((← fa env).isNull != neg)
   | .inSelRow es q neg affs colls =>
     let fs := es.map (compileE sub · fuel)
+    let run := sub q
     fun env => do
       let vs ← fs.mapM (· env)
-      let rows ← sub env q
+      let rows ← run env
       let mut sawNull := false
       let mut found := false
       for r in rows do
@@ -1765,12 +1771,63 @@ def joinAll (emit : σ → Env → Array RowRef → EM σ) (stop : σ → Bool) 
         if ok then acc ← joinFrom emit stop track e srcs runs subs autos needs (r+1) refs acc fuel
       return acc.1
 
+/-- Whether `hoist` replaces a subquery in the expression. -/
+def CExpr.hoists : CExpr → Nat → Bool
+  | _, 0 => false
+  | e, fuel+1 => match e with
+  | .scalar _ false | .exists _ _ false | .inSel _ _ _ _ _ false => true
+  | .arith _ a b | .cmp _ a b _ _ | .and a b | .or a b => a.hoists fuel || b.hoists fuel
+  | .not a | .neg a | .cast a _ | .isNull a _ => a.hoists fuel
+  | .fn _ args => args.any (·.hoists fuel)
+  | .inList x items _ _ _ => x.hoists fuel || items.any (·.hoists fuel)
+  | .matchE _ x p esc _ => x.hoists fuel || p.hoists fuel || esc.any (·.hoists fuel)
+  | _ => false
+
+/-- Whether `hoistCore` replaces a subquery in the core. -/
+def CCore.hoists (core : CCore) (fuel : Nat) : Bool :=
+  let any (es : Array CExpr) : Bool := es.any (·.hoists fuel)
+  match core with
+  | .values rows _ => rows.any any
+  | .select srcs pre filters g _ h cols _ order _ _ _ _ _ =>
+    srcs.any (fun s => match s with
+      | .table _ _ _ _ _ _ acc _ _ _ on => any on || match acc with
+        | .rowidEq e => e.hoists fuel
+        | .rowidIn items => any items
+        | _ => false
+      | _ => false)
+    || any pre || filters.any any || any g || h.any (·.hoists fuel) || any cols || any order
+
+/-- A subquery made ready for all its runs over one run of the query it is in: each core hoisted and compiled when a run
+first reaches it, LIMIT and OFFSET compiled. -/
+structure Prep where
+  cores : Array (Thunk (EM (CCore × CorePrep)))
+  limit : Option CFn
+  offset : Option CFn
+
 mutual
 /-- An expression's value (compiled, then run once). -/
 def eval (env : Env) : CExpr → Nat → EM Value
   | _, 0 => .error "expression nested too deeply"
-  | e, fuel+1 => (e.compile (fun env q => runSel env q fuel) fuel) env
+  | e, fuel+1 => (e.compile (subRun env fuel) fuel) env
   termination_by _ fuel => fuel
+
+/-- How the expressions compiled in `env` run their subqueries: each prepared once, its uncorrelated subqueries hoisted in
+`env` (a subquery with WITH tables of its own, which may read the enclosing row, is prepared on each run). -/
+def subRun (env : Env) : Nat → SubRun
+  | 0 => fun _ _ => .error "query nested too deeply"
+  | fuel+1 => fun q =>
+    let .mk ctes cores _ _ limit offset _ := q
+    if !ctes.isEmpty then fun e => runSel e q fuel else
+    let sub := subRun env fuel
+    let prep : Prep := {
+      cores := cores.map fun c => Thunk.mk fun _ => do
+        let c ← hoistCore env c fuel
+        -- (every FROM item's rows made on each run)
+        pure (c, { run := c.compile sub fuel, fresh := #[], subs := #[], autos := #[] })
+      limit := limit.map (·.compile sub fuel)
+      offset := offset.map (·.compile sub fuel) }
+    fun e => foldSel e (some prep) q fuel #[] (fun _ => false) keepRow
+  termination_by fuel => fuel
 
 /-- Uncorrelated subqueries run once: replaced by their result. -/
 def hoist (env : Env) : CExpr → Nat → EM CExpr
@@ -1807,10 +1864,12 @@ def hoist (env : Env) : CExpr → Nat → EM CExpr
   | e => .ok e
   termination_by _ fuel => fuel
 
+/-- A core's uncorrelated subqueries run once: replaced by their result (a core with none is returned as it is). -/
 def hoistCore (env : Env) : CCore → Nat → EM CCore
   | c, 0 => .ok c
-  | .values rows order, fuel+1 => do return .values (← rows.mapM fun r => r.mapM fun e => hoist env e fuel) order
-  | .select srcs pre filters g gc h cols rc order aggs isAgg d w ws, fuel+1 => do
+  | c, fuel+1 => if !c.hoists fuel then .ok c else match c with
+  | .values rows order => do return .values (← rows.mapM fun r => r.mapM fun e => hoist env e fuel) order
+  | .select srcs pre filters g gc h cols rc order aggs isAgg d w ws => do
     let hs (es : Array CExpr) : EM (Array CExpr) := es.mapM fun e => hoist env e fuel
     let srcs ← srcs.mapM fun (s : CSource) => (match s with
       | .table r n ipk rc dv base acc left right lay on => do
@@ -1829,7 +1888,7 @@ def hoistCore (env : Env) : CCore → Nat → EM CCore
 /-- Runs a SELECT: its rows. -/
 def runSel (env : Env) : CSel → Nat → EM (Array Row)
   | _, 0 => .error "query nested too deeply"
-  | q, fuel+1 => foldSel env q fuel #[] (fun _ => false) keepRow
+  | q, fuel+1 => foldSel env none q fuel #[] (fun _ => false) keepRow
   termination_by _ fuel => fuel
 
 /-- A FROM subquery's or WITH table's rows, computed whole (none for any other item). -/
@@ -1843,8 +1902,8 @@ def itemRows (env : Env) : CSource → Nat → EM (Option (Array Row))
 
 /-- Runs a SELECT into a consumer: each row read into its state in turn, until `stop` holds. One core or a UNION ALL,
 with no ORDER BY, yields each row as its join makes it (sqlite's co-routine), so a row past what the consumer reads or
-the LIMIT is never computed; any other SELECT is computed whole first. -/
-def foldSel (env : Env) : CSel → Nat → σ → (σ → Bool) → (σ → Row → EM σ) → EM σ
+the LIMIT is never computed; any other SELECT is computed whole first. `pre?`: the SELECT prepared already. -/
+def foldSel (env : Env) (pre? : Option Prep) : CSel → Nat → σ → (σ → Bool) → (σ → Row → EM σ) → EM σ
   | _, 0, _, _, _ => .error "query nested too deeply"
   | .mk ctes cores ops dirs limit offset _, fuel+1, init, stop, emit => do
     -- WITH tables: each computed when first read, or run by the FROM item that reads it
@@ -1853,20 +1912,27 @@ def foldSel (env : Env) : CSel → Nat → σ → (σ → Bool) → (σ → Row 
       let .mk id q recursive materialize := c
       let e := env
       let rows := Thunk.mk fun _ =>
-        if recursive then foldRecursive e id q fuel #[] (fun _ => false) keepRow else foldSel e q fuel #[] (fun _ => false) keepRow
+        if recursive then foldRecursive e id q fuel #[] (fun _ => false) keepRow else foldSel e none q fuel #[] (fun _ => false) keepRow
       let cte : CteRows := { rows, stream := if materialize then none else some (c, e.frames.size) }
       let cs := if env.ctes.size ≤ id then env.ctes ++ Array.replicate (id + 1 - env.ctes.size) {} else env.ctes
       env := { env with ctes := cs.setIfInBounds id cte }
+    let value (e : CExpr) (pre : Option CFn) : EM Value := match pre with
+      | some f => f env
+      | none => eval env e fuel
     let lim ← match limit with
       | some e => do
-        let i ← limitInt (← eval env e fuel)
+        let i ← limitInt (← value e (pre?.bind (·.limit)))
         pure (if i < 0 then none else some i.toNatClampNeg)
       | none => pure none
     -- LIMIT 0: no row is read, nothing evaluated (not even OFFSET)
     if lim == some 0 then return init
     let off ← match offset with
-      | some e => do let i ← limitInt (← eval env e fuel); pure i.toNatClampNeg
+      | some e => do let i ← limitInt (← value e (pre?.bind (·.offset))); pure i.toNatClampNeg
       | none => pure 0
+    -- core i hoisted, and its expressions compiled when prepared
+    let ready (i : Nat) (core : CCore) : EM (CCore × Option CorePrep) := match pre?.bind (·.cores[i]?) with
+      | some t => do let (c, r) ← t.get; pure (c, some r)
+      | none => do pure (← hoistCore env core fuel, none)
     -- one core puts its own rows in ORDER BY's order
     let ord := if cores.size == 1 && !dirs.isEmpty then some (dirs, lim.map (· + off)) else none
     if (dirs.isEmpty || cores.size == 1) && ops.all (· == .unionAll) then
@@ -1876,16 +1942,18 @@ def foldSel (env : Env) : CSel → Nat → σ → (σ → Bool) → (σ → Row 
         return (← emit st.1 (← row ()).1, st.2 + 1)
       let full (st : σ × Nat) : Bool := stop st.1 || lim.any (off + · ≤ st.2)
       let mut st := (init, 0)
+      let mut i := 0
       for core in cores do
         if full st then break
-        let core ← hoistCore env core fuel
-        st ← runCore env none ord core fuel st full take
+        let (core, cr) ← ready i core
+        st ← runCore env cr ord core fuel st full take
+        i := i + 1
       return st.1
     let mut acc : Array (Row × Row) := #[]
     let mut i := 0
     for core in cores do
-      let core ← hoistCore env core fuel
-      let rs ← runCore env none ord core fuel #[] (fun _ => false) fun rs r => do pure (rs.push (← r ()))
+      let (core, cr) ← ready i core
+      let rs ← runCore env cr ord core fuel #[] (fun _ => false) fun rs r => do pure (rs.push (← r ()))
       if i == 0 then acc := rs else
         match ops[i - 1]? with
         | some .unionAll => acc := acc ++ rs
@@ -1949,7 +2017,7 @@ def foldRecursive (env : Env) (id : Nat) : CSel → Nat → σ → (σ → Bool)
         | some cp => pure cp
         | none => do
           let core ← hoistCore env recur fuel
-          let run := core.compile (fun env q => runSel env q fuel) fuel
+          let run := core.compile (fun q e => runSel e q fuel) fuel
           let (subs, autos) ← match core with
             | .select srcs _ _ _ _ _ _ _ _ _ _ _ width _ => do
               let subs ← srcs.mapIdxM fun i s => if fresh.getD i true then pure none else itemRows env s fuel
@@ -1992,7 +2060,7 @@ def runCore (env : Env) (prep? : Option CorePrep) (ord : Option (Array (Bool × 
     let frame0 : Row := Array.replicate width .null
     -- the core's expressions, compiled once (or by the caller, for all its runs)
     let cr := (prep?.map (·.run)).getD ((CCore.select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width
-      wins).compile (fun env q => runSel env q fuel) fuel)
+      wins).compile (subRun env fuel) fuel)
     let preOk ← cr.pre (env.push frame0)
     unless preOk do
       if isAgg && groupBy.isEmpty then pure () else return init
@@ -2002,17 +2070,17 @@ def runCore (env : Env) (prep? : Option CorePrep) (ord : Option (Array (Bool × 
     -- the first FROM item, a subquery or a WITH table read once: its rows as its SELECT yields them (over the frames of
     -- the SELECT a WITH table belongs to), unless a RIGHT JOIN or a transient index reads them again
     let outer (τ : Type) : Option (RowFold τ) := if rightIdx.isSome || shared 0 then none else match (srcs[0]? : Option CSource) with
-      | some (.sub q _ _ _ _ _ keys) => if keys.isEmpty then some (foldSel env q fuel) else none
+      | some (.sub q _ _ _ _ _ keys) => if keys.isEmpty then some (foldSel env none q fuel) else none
       | some (.cte id _ _ _ _ _ keys) => if !keys.isEmpty then none else
         (env.ctes.getD id {}).stream.map fun (.mk cid q recursive _, depth) =>
           let e := { env with frames := env.frames.extract 0 depth }
-          if recursive then foldRecursive e cid q fuel else foldSel e q fuel
+          if recursive then foldRecursive e cid q fuel else foldSel e none q fuel
       | _ => none
     let streamed := (outer Unit).isSome
     -- the other FROM subqueries and WITH tables: computed whole, once
     let subs ← srcs.mapIdxM fun i s =>
       match prep? with
-      | some p => if shared i then pure (p.subs.getD i none) else itemRows env s fuel
+      | some p => if shared i then pure (p.subs.getD i none) else if i == 0 && streamed then pure none else itemRows env s fuel
       | none => if i == 0 && streamed then pure none else itemRows env s fuel
     -- transient indexes, built once (and only once some row reaches their item)
     let autos := srcs.mapIdx fun i s => match prep? with
@@ -2141,7 +2209,7 @@ def runCore (env : Env) (prep? : Option CorePrep) (ord : Option (Array (Bool × 
           | some e => return out.push e
           | none => return out) #[]
     -- window functions, over all the result rows
-    let winCols ← wins.mapM fun w => winColumn envs w fuel
+    let winCols ← wins.mapM fun w => winColumn env envs w fuel
     let envOf (i : Nat) : Env := { (envs.getD i env) with wins := winCols.map (·.getD i .null) }
     if !distinct && ord.isNone then
       -- a result row's columns are computed only when it is output
@@ -2162,12 +2230,12 @@ def runCore (env : Env) (prep? : Option CorePrep) (ord : Option (Array (Bool × 
 
 /-- A window function's value for each result row: rows ordered by partition and ORDER BY keys, peers grouped, and the
 frame of each row found (ROWS, RANGE or GROUPS, with EXCLUDE). -/
-def winColumn (envs : Array Env) (w : CWin) : Nat → EM (Array Value)
+def winColumn (env : Env) (envs : Array Env) (w : CWin) : Nat → EM (Array Value)
   | 0 => .error "query nested too deeply"
   | fuel+1 => do
     let .mk name distinct star args filter part pcolls ord dirs units start finish excl := w
     let n := envs.size
-    let sub : SubRun := fun env q => runSel env q fuel
+    let sub := subRun env fuel
     let comp (xs : Array CExpr) : Array CFn := xs.map (·.compile sub fuel)
     let (partC, ordC, argsC) := (comp part, comp ord, comp args)
     let pk ← envs.mapM fun e => partC.mapM (· e)
