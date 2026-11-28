@@ -4,7 +4,7 @@
 #   default: both run against :memory:
 #   --file : both run against a fresh temp file db; additionally runs
 #            'pragma integrity_check' with sqlite3 on our file and compares .dump of both files.
-# stdout is compared; for stderr only the count of lines starting with
+# stdout is compared (and stderr whole, for a script named *-stderr.sql); for stderr only the count of lines starting with
 # "Error", "Parse error" or "Runtime error" is compared.
 here=$(cd "$(dirname "$0")" && pwd)
 mode=mem
@@ -32,6 +32,11 @@ for f in "$here"/sql/*.sql; do
     bad="$bad$(diff -u "$tmp/ref.out" "$tmp/our.out" | head -20)
 "
   fi
+  # a script named *-stderr: the whole of stderr is compared
+  case "$name" in *-stderr) if ! cmp -s "$tmp/ref.err" "$tmp/our.err"; then
+    bad="$bad$(diff -u "$tmp/ref.err" "$tmp/our.err" | head -20)
+"
+  fi;; esac
   e1=$(errcount "$tmp/ref.err"); e2=$(errcount "$tmp/our.err")
   if [ "$e1" != "$e2" ]; then
     bad="$bad--- error line count: sqlite3=$e1 ours=$e2 (exit $rc)
