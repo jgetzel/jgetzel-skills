@@ -143,8 +143,7 @@ def updateSchemaRow (n : String) (f : Array Value → Array Value) (temp : Bool 
 
 /-- A table's scope for compiling expressions over one of its rows (columns, then the rowid, from slot 0). -/
 def tableScope (t : Table) (name : String := t.name) : Scope :=
-  { srcs := #[{ name, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
-                base := 0, rowid := some t.cols.size, hidden := t.cols.map fun _ => false }] }
+  { srcs := #[{ name, cols := t.names, affs := t.affs, colls := t.colls, base := 0, rowid := some t.cols.size }] }
 
 /-- An expression compiled once, to run on many rows. -/
 def cfn (e : CExpr) : CFn := e.compile (fun env q => runSel env q (fuel0 - 1)) (fuel0 - 1)
@@ -201,10 +200,10 @@ def recordOver (t : Table) (row : Row) (o : OldRow) : ByteArray :=
   spliceRecord o.record o.fields t.cols.size (fun i => !o.changed.getD i true && t.ipk != some i) fun i =>
     if t.ipk == some i then .null
     else if o.changed.getD i true || i < o.fields.size then row.getD i .null
-    else columnDefault (t.cols.getD i default)
+    else t.defaults.getD i .null
 
 def tableRow (t : Table) (rowid : Int64) (rec_ : ByteArray) : Row :=
-  decodeRow t.cols.size t.ipk (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) rowid rec_
+  decodeRow t.cols.size t.ipk t.reals t.defaults rowid rec_
 
 /-- The rowid of another row with the same key in a UNIQUE index (NULLs never conflict). -/
 def uniqueConflict (p : Pager) (ix : PIdx) (row : Row) (rowid : Int64) : Option Int64 :=
@@ -224,8 +223,7 @@ def indexNeed (t : Table) (idxs : Array PIdx) : Array Bool :=
 
 /-- A table row's slots that `need` marks, decoded from its record (the others NULL). -/
 def tableRowNeed (t : Table) (need : Array Bool) (rowid : Int64) (rec_ : ByteArray) : Row :=
-  fillRow (Array.replicate (t.cols.size + 1) .null) 0 t.cols.size t.ipk (t.cols.map (·.aff == .real))
-    (t.cols.map columnDefault) need rowid rec_
+  fillRow (Array.replicate (t.cols.size + 1) .null) 0 t.cols.size t.ipk t.reals t.defaults need rowid rec_
 
 /-- Removes a row (`row`: as stored, at least the slots `indexNeed` marks) and its index entries. -/
 def deleteRowOf (idxs : Array PIdx) (t : Table) (row : Row) (rowid : Int64) (p : Pager) : Pager :=
@@ -409,7 +407,7 @@ def matchingRowids (t : Table) (name : String) (w : Option Expr) : XS (Array Int
   let conds := conds.map (·.1)
   -- the conditions that read no column are checked once, the others on each row
   let (pre, onRow) := conds.partition fun c => let (ss, corr) := slotsOf c 64; ss.isEmpty && !corr
-  let src := CSource.table t.root n t.ipk (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) 0
+  let src := CSource.table t.root n t.ipk t.reals t.defaults 0
     (chooseAccess t (s.indexesOfTable t) 0 conds) false false #[] #[]
   let core := CCore.select #[src] pre #[onRow] #[] #[] none #[.col 0 n] #[.binary] #[] #[] false false (n + 1) #[]
   let env ← envX
@@ -422,7 +420,7 @@ def matchingRowids (t : Table) (name : String) (w : Option Expr) : XS (Array Int
 
 def worVals (t : Table) (row : Row) : Array Value := t.layout.map (row.getD · .null)
 def worKey (t : Table) (row : Row) : ByteArray := encodeRecord (t.pkCols.map (row.getD · .null))
-def worRowOf (t : Table) (r : ByteArray) : Row := worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) r
+def worRowOf (t : Table) (r : ByteArray) : Row := worRow t.cols.size t.layout t.reals t.defaults r
 
 /-- An index's entry for a row: its columns, then the rowid (or, on a WITHOUT ROWID table, the key columns it lacks). -/
 def entryVals (ix : PIdx) (row : Row) (rowid : Int64) : Array Value :=
@@ -503,8 +501,7 @@ def writeRowWor (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)
 def trigScope (t : Table) : Scope :=
   let n := t.cols.size
   let src (name : String) (base : Nat) : SrcInfo :=
-    { name, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll), base,
-      rowid := some (base + n), hidden := t.cols.map fun _ => false }
+    { name, cols := t.names, affs := t.affs, colls := t.colls, base, rowid := some (base + n) }
   { srcs := #[src "new" 0, src "old" (n + 1)] }
 
 def evMatch (te ev : TriggerEvent) (setCols : List String) : Bool :=
@@ -575,12 +572,10 @@ def createIndexOn (t : Table) (name : String) (cols : List IndexedCol) (unique :
   -- the columns a plain index reads; a partial or expression index reads them all
   let need := Array.replicate (t.cols.size + 1) (pred.isSome || ix0.hasExprs)
   let need := ns.foldl (fun m c => m.setIfInBounds c true) (need.setIfInBounds t.cols.size true)
-  let rows := if t.withoutRowid then BTree.foldIndex p0 t.root #[] fun acc r => acc.push (worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) r)
+  let rows := if t.withoutRowid then BTree.foldIndex p0 t.root #[] fun acc r => acc.push (worRow t.cols.size t.layout t.reals t.defaults r)
     else
-      let rc := t.cols.map (·.aff == .real)
-      let dv := t.cols.map columnDefault
       let blank : Row := Array.replicate (t.cols.size + 1) .null
-      BTree.foldTable p0 t.root #[] fun acc k r => acc.push (fillRow blank 0 t.cols.size t.ipk rc dv need k r)
+      BTree.foldTable p0 t.root #[] fun acc k r => acc.push (fillRow blank 0 t.cols.size t.ipk t.reals t.defaults need k r)
   -- a partial index holds the rows its WHERE accepts
   let px0 := PIdx.of s0 t ix0
   let rows := if pred.isNone then rows else rows.filter fun r => inIndex px0 ({ pager := Pager.placeholder } : Env) r
@@ -729,7 +724,7 @@ def alterAdd (tn : String) (cd : ColumnDef) (colText : String) : XS Unit := do
   let col : Column := { name := cd.name, type := cd.type, aff := Aff.ofType cd.type, notNull := cd.notNull,
                         default := cd.default, coll := (cd.collate.bind Collation.ofName?).getD .binary }
   updateSchemaRow t.name (fun vs => vs.setIfInBounds 4 (.text sql)) t.temp
-  modSchema fun s => { s with tables := s.tables.map fun x => if nameEq x.name tn then { x with cols := x.cols.push col, sql := sql } else x }
+  modSchema fun s => { s with tables := s.tables.map fun x => if nameEq x.name tn then { x.withCols (x.cols.push col) with sql := sql } else x }
 
 def pragma (name : String) (value : Option String) : XS Result := do
   let n := lowerAscii name
@@ -1002,10 +997,9 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
   let upsP : List (Upsert × Option (Option (Except String CFn) × List (String × Except String CFn))) ← do
     let sc ← scopesX
     let upScope : Scope := { srcs := #[
-      { name := t.name, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
-        base := 0, rowid := some t.cols.size, hidden := t.cols.map fun _ => false },
+      { name := t.name, cols := t.names, affs := t.affs, colls := t.colls, base := 0, rowid := some t.cols.size },
       -- excluded.* only by its name: an unqualified column is the table's
-      { name := "excluded", cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
+      { name := "excluded", cols := t.names, affs := t.affs, colls := t.colls,
         base := t.cols.size + 1, rowid := some (2 * t.cols.size + 1), hidden := t.cols.map fun _ => true }] }
     let comp (e : Expr) : Except String CFn :=
       ((compileExpr { schema := s, scopes := upScope :: sc } e fuel0).run {}).mapError (·.msg) |>.map fun ((ce, _, _), _) => cfn ce

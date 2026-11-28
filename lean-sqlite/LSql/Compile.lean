@@ -33,8 +33,8 @@ structure SrcInfo where
   colls : Array Collation
   base : Nat
   rowid : Option Nat
-  /-- columns USING merged into an earlier source's: not seen by `*` or by unqualified names -/
-  hidden : Array Bool
+  /-- columns USING merged into an earlier source's: not seen by `*` or by unqualified names (one past its end: not hidden) -/
+  hidden : Array Bool := #[]
   /-- the slots it takes (0: its columns, and its rowid's when it has one) -/
   width : Nat := 0
   /-- json_each / json_tree: its `value` column (slot base + 1) carries the JSON subtype for arrays and objects -/
@@ -313,38 +313,6 @@ def autoKeys (base ncols : Nat) (rowid : Option Nat) (conds : Array CExpr) : Arr
     match k with
     | some k => if ks.any (·.1 == k.1) then ks else ks.push k
     | none => ks) #[]
-
-/-- CAST to an affinity. -/
-def castV (aff : Aff) (v : Value) : Value :=
-  match v with
-  | .null => .null
-  | v => match aff with
-    | .integer => .int (Num.castToInt v)
-    | .real => .real (Num.castToReal v)
-    | .numeric => Num.castToNumeric v
-    | .text => .text v.toText
-    | .blob | .none => .blob v.toBytes
-
-/-- Unary minus of a constant: text and blobs read as numbers; the smallest Int64 negates to a real. -/
-def negConst : Value → Value
-  | .null => .null
-  | .int i => if i == Int64.minValue then .real (-i.toFloat) else .int (-i)
-  | .real f => .real (-f)
-  | v => match Num.castToNumeric v with
-    | .int i => if i == Int64.minValue then .real (-i.toFloat) else .int (-i)
-    | .real f => .real (-f)
-    | _ => .int 0
-
-/-- sqlite3ValueFromExpr on a DEFAULT: the value of a literal, unary + or -, or CAST of those; any other expression has none. -/
-def constDefault? : Expr → Option Value
-  | .lit v => some v
-  | .un .pos e => constDefault? e
-  | .un .neg e => (constDefault? e).map negConst
-  | .cast e t => (constDefault? e).map (castV (Aff.ofType t))
-  | _ => none
-
-/-- A column's default as a stored value: a row older than the column (ALTER TABLE ADD COLUMN) reads it through the column's affinity. -/
-def columnDefault (c : Column) : Value := Value.applyAff c.aff ((c.default.bind constDefault?).getD .null)
 
 def stripCollate (e : Expr) : Expr := match e with | .collate x _ => x | x => x
 
@@ -1210,7 +1178,14 @@ def compileSelectCore (env : CEnv) (distinct : Bool) (cols : List ResultCol) (wh
         names := names.push (match alias with
           | some n => n
           | none => match e with
-            | .col tbl n _ _ => colName infos tbl n
+            | .col tbl n _ _ =>
+              -- the name of the column it resolved to (the slot of an item's column), else as colName finds it
+              let resolved := match ce with
+                | .col 0 s => infos.findSome? fun i => if i.base ≤ s then i.cols[s - i.base]? else none
+                | _ => none
+              match resolved with
+              | some c => c
+              | none => colName infos tbl n
             | _ => span)
     -- WHERE (no aggregates, no windows), ON
     modify fun st => { st with allowAgg := false, allowWin := false }
@@ -1277,9 +1252,10 @@ def compileSelectCore (env : CEnv) (distinct : Bool) (cols : List ResultCol) (wh
       let (ss, corr) := slotsOf c 64
       if corr then some (srcs.size - 1) else
       ss.foldl (fun (acc : Option Nat) s => let j := srcOfSlot bases s; some (max (acc.getD 0) j)) none
-    let pre := allConds.filter fun c => (level c).isNone || srcs.isEmpty
+    let levels := allConds.map fun c => (c, level c)
+    let pre := levels.filterMap fun (c, l) => if l.isNone || srcs.isEmpty then some c else none
     let filters := (List.range srcs.size).toArray.map fun j =>
-      allConds.filter fun c => !srcs.isEmpty && level c == some j
+      levels.filterMap fun (c, l) => if l == some j then some c else none
     let srcs : Array CSource := srcs.mapIdx fun j s => match s with
       | .table root n ipk rc dv base _ left right layout _ =>
         let conds := if left || right then leftOn.getD j #[] else allConds
@@ -1332,7 +1308,7 @@ def compileItem (env : CEnv) (infos : Array SrcInfo) (item : FromItem) (slot : N
                 st.cteReads ++ Array.replicate (c.id + 1 - st.cteReads.size) 0 else st.cteReads).modify c.id (· + 1) }
             pure (CSource.cte c.id c.cols.size slot left right #[] #[],
               { name := an, cols := c.cols, affs := c.affs, colls := c.cols.map fun _ => .binary, base := slot,
-                rowid := none, hidden := c.cols.map fun _ => false : SrcInfo })
+                rowid := none : SrcInfo })
           | none =>
           match env.schema.view? qname with
           | some v =>
@@ -1342,7 +1318,7 @@ def compileItem (env : CEnv) (infos : Array SrcInfo) (item : FromItem) (slot : N
             let ns := if v.cols.isEmpty then ns else v.cols.toArray
             pure (CSource.sub cq ns.size slot left right #[] #[],
               { name := an, cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
-                rowid := none, hidden := ns.map fun _ => false : SrcInfo })
+                rowid := none : SrcInfo })
           | none =>
           let tbl := if nameEq name "sqlite_schema" || nameEq name "sqlite_master" then some schemaTable
             else if nameEq name "sqlite_temp_schema" || nameEq name "sqlite_temp_master" then
@@ -1352,11 +1328,9 @@ def compileItem (env : CEnv) (infos : Array SrcInfo) (item : FromItem) (slot : N
           | none => throwC s!"no such table: {name}"
           | some t =>
             let n := t.cols.size
-            pure (CSource.table t.root n t.ipk (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) slot .full
-                left right t.layout #[],
-              { name := an, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
-                base := slot, rowid := if t.withoutRowid then none else some (slot + n), hidden := t.cols.map fun _ => false,
-                width := n + 1 : SrcInfo })
+            pure (CSource.table t.root n t.ipk t.reals t.defaults slot .full left right t.layout #[],
+              { name := an, cols := t.names, affs := t.affs, colls := t.colls, base := slot,
+                rowid := if t.withoutRowid then none else some (slot + n), width := n + 1 : SrcInfo })
         | .call fname args alias =>
           let n := lowerAscii fname
           if n.startsWith "pragma_" then
@@ -1368,7 +1342,7 @@ def compileItem (env : CEnv) (infos : Array SrcInfo) (item : FromItem) (slot : N
               let cargs ← compileList env' args fuel
               pure (CSource.tvf n (cargs.map (·.1)) ns.size slot left right #[],
                 { name := alias.getD fname, cols := ns, affs := ns.map fun _ => .none, colls := ns.map fun _ => .binary,
-                  base := slot, rowid := none, hidden := ns.map fun _ => false : SrcInfo })
+                  base := slot, rowid := none : SrcInfo })
           else if n == "json_each" || n == "json_tree" then
             -- read per row of the earlier items: the arguments may name their columns
             let env' := { env with scopes := { srcs := infos } :: env.scopes }
@@ -1377,13 +1351,13 @@ def compileItem (env : CEnv) (infos : Array SrcInfo) (item : FromItem) (slot : N
             let ns := #["key", "value", "type", "atom", "id", "parent", "fullkey", "path"]
             pure (CSource.tvf n (cargs.map (·.1)) ns.size slot left right #[],
               { name := alias.getD fname, cols := ns, affs := ns.map fun _ => .none, colls := ns.map fun _ => .binary,
-                base := slot, rowid := none, hidden := ns.map fun _ => false, jsonEach := true : SrcInfo })
+                base := slot, rowid := none, jsonEach := true : SrcInfo })
           else throwC s!"no such table-valued function: {fname}"
         | .subquery q alias =>
           let (cq, ns, affs, colls, _) ← compileSub env q true fuel
           pure (CSource.sub cq ns.size slot left right #[] #[],
             { name := alias.getD "", cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
-              rowid := none, hidden := ns.map fun _ => false : SrcInfo })
+              rowid := none : SrcInfo })
 termination_by structural fuel => fuel
 
 /-- The FROM items: sources (from slot `slot0`, numbered from `j0`), their scope entries, the ON conditions (with the
@@ -1450,7 +1424,8 @@ def compileFrom (env : CEnv) (shape : Shape) (slot0 j0 : Nat) (after : Option Jo
         let le ← if l.flat.isEmpty then pure (CExpr.col 0 (l.base + lc)) else compileFlatCol env (.ref l lc) 0 env.scopes fuel
         let re ← if info.flat.isEmpty then pure (CExpr.col 0 (info.base + ri)) else compileFlatCol env (.ref info ri) 0 env.scopes fuel
         ons := ons.push (j, .cmp .eq le re (cmpAff (l.affs.getD 0 .none) .none) (l.colls.getD 0 .binary))
-        info := { info with hidden := info.hidden.setIfInBounds ri true }
+        let hidden := if info.hidden.size < info.cols.size then Array.replicate info.cols.size false else info.hidden
+        info := { info with hidden := hidden.setIfInBounds ri true }
       infos := infos.push info
       if let some s := src then
         srcs := srcs.push s
@@ -1619,7 +1594,7 @@ def compileFlat (fs : FlatSrc) (k : Nat) (comp : Option (Array String × Array A
       | _ => none
     let info : SrcInfo := {
       name := fs.alias, cols := names, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary,
-      base := slot, rowid := none, hidden := names.map fun _ => false, flat, inner := iinfos, flatCtes := envQ.ctes,
+      base := slot, rowid := none, flat, inner := iinfos, flatCtes := envQ.ctes,
       flatPad := fs.pad, flatNull := nullRow }
     let hoisted := (cctes.zip ctes.toArray).map fun (c, Cte.mk _ _ _ m) => (c, m)
     return (isrcs, ions, islot, info, { x with

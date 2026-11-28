@@ -23,6 +23,38 @@ structure Column where
   pk : Bool := false
   deriving Inhabited
 
+/-- CAST to an affinity. -/
+def castV (aff : Aff) (v : Value) : Value :=
+  match v with
+  | .null => .null
+  | v => match aff with
+    | .integer => .int (Num.castToInt v)
+    | .real => .real (Num.castToReal v)
+    | .numeric => Num.castToNumeric v
+    | .text => .text v.toText
+    | .blob | .none => .blob v.toBytes
+
+/-- Unary minus of a constant: text and blobs read as numbers; the smallest Int64 negates to a real. -/
+def negConst : Value → Value
+  | .null => .null
+  | .int i => if i == Int64.minValue then .real (-i.toFloat) else .int (-i)
+  | .real f => .real (-f)
+  | v => match Num.castToNumeric v with
+    | .int i => if i == Int64.minValue then .real (-i.toFloat) else .int (-i)
+    | .real f => .real (-f)
+    | _ => .int 0
+
+/-- sqlite3ValueFromExpr on a DEFAULT: the value of a literal, unary + or -, or CAST of those; any other expression has none. -/
+def constDefault? : Expr → Option Value
+  | .lit v => some v
+  | .un .pos e => constDefault? e
+  | .un .neg e => (constDefault? e).map negConst
+  | .cast e t => (constDefault? e).map (castV (Aff.ofType t))
+  | _ => none
+
+/-- A column's default as a stored value: a row older than the column (ALTER TABLE ADD COLUMN) reads it through the column's affinity. -/
+def columnDefault (c : Column) : Value := Value.applyAff c.aff ((c.default.bind constDefault?).getD .null)
+
 structure Table where
   name : String
   root : Pgno
@@ -42,7 +74,19 @@ structure Table where
   pkCols : Array Nat := #[]
   pkColls : Array Collation := #[]
   pkDesc : Array Bool := #[]
+  /-- each column's name, affinity and collation, whether it is REAL, and its stored default (`columnDefault`), computed
+  once with `cols` (`Table.withCols` changes the columns) -/
+  names : Array String := cols.map (·.name)
+  affs : Array Aff := cols.map (·.aff)
+  colls : Array Collation := cols.map (·.coll)
+  reals : Array Bool := cols.map (·.aff == .real)
+  defaults : Array Value := cols.map columnDefault
   deriving Inhabited
+
+/-- The table with columns `cols`. -/
+def Table.withCols (t : Table) (cols : Array Column) : Table :=
+  { t with cols, names := cols.map (·.name), affs := cols.map (·.aff), colls := cols.map (·.coll),
+           reals := cols.map (·.aff == .real), defaults := cols.map columnDefault }
 
 /-- The table column of each record field: the key columns, then the rest (a WITHOUT ROWID table; empty otherwise). -/
 def Table.layout (t : Table) : Array Nat :=
