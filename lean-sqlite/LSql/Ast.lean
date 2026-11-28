@@ -179,6 +179,8 @@ structure IndexedCol where
   desc : Bool := false
   /-- an expression index's term (`name` is then its source text) -/
   expr : Option Expr := none
+  /-- the byte offset of the column name in the statement it was parsed from -/
+  pos : Option Nat := none
   deriving Inhabited
 
 inductive TableConstraint where
