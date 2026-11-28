@@ -1382,7 +1382,7 @@ def indexedColsAux (allowExpr : Bool) : Nat → List IndexedCol → Bool → P (
     let ai2 ← accept .kAUTOINCREMENT
     let k ← curKind
     if k != .comma && k != .rp then synErr
-    let acc := ({ name, collate, desc, expr := ex? } : IndexedCol) :: acc
+    let acc := ({ name, collate, desc, expr := ex?, pos := some t.s } : IndexedCol) :: acc
     if k == .comma then
       advance
       indexedColsAux allowExpr f acc (ai || ai2)

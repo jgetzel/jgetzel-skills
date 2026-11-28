@@ -903,6 +903,8 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
             | _ => span)
     -- WHERE (no aggregates, no windows), ON
     modify fun st => { st with allowAgg := false, allowWin := false }
+    -- HAVING needs aggregates in the result columns or a GROUP BY (one in HAVING itself does not count)
+    if having.isSome && groupBy.isEmpty && (← get).aggs.isEmpty then throwC "HAVING clause on a non-aggregate query"
     let aliasList := cols.filterMap fun | .expr e (some a) _ => some (a, e) | _ => none
     let env' := { env' with aliases := aliasList }
     let whereConds ← compileList env' (match whereE with | some w => conjuncts w 64 | none => []) fuel
@@ -951,7 +953,6 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     set { st with aggs := #[], allowAgg := false, wins := #[], allowWin := false }
     if !aggs.isEmpty && infos.isEmpty && false then throwC ""
     let isAgg := !aggs.isEmpty || !cgroup.isEmpty
-    if chaving.isSome && !isAgg then throwC "a GROUP BY clause is required before HAVING"
     -- where each condition is checked, and how each table is read
     let bases := infos.map (·.base)
     if (srcs.filter isRightOuter).size > 1 then throwC "lean-sqlite: only one RIGHT or FULL JOIN per SELECT is supported"
@@ -1029,6 +1030,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           | some v =>
             -- the view's own text, not the statement's: its errors point nowhere in it
             let (cq, ns, affs, colls, _) ← try compileSub { env with scopes := [] } v.q false fuel catch e => throw { e with pos := none }
+            if !v.cols.isEmpty && v.cols.length != ns.size then throwC s!"expected {v.cols.length} columns for '{v.name}' but got {ns.size}"
             let ns := if v.cols.isEmpty then ns else v.cols.toArray
             pure (CSource.sub cq ns.size slot left right #[] #[],
               { name := an, cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
@@ -1094,7 +1096,8 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
       -- ON sees this item and the earlier ones
       if let some o := on then
         let env' := { env with scopes := { srcs := infos } :: env.scopes }
-        let cs ← compileList env' (conjuncts o 64) fuel
+        -- (sqlite3 gives an error in an ON clause no offset)
+        let cs ← try compileList env' (conjuncts o 64) fuel catch e => throw { e with pos := none }
         ons := ons ++ cs.map fun (c, _, _) => (j, c)
     return (srcs, infos, ons, slot)
 end

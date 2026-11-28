@@ -553,8 +553,18 @@ def quoteName (s : String) : String :=
   let plain := !s.isEmpty && s.toList.all (fun c => c.isAlphanum || c == '_') && !(s.toList.headD '0').isDigit
   if plain then s else "\"" ++ s.replace "\"" "\"\"" ++ "\""
 
+/-- The columns of a CREATE INDEX or PRIMARY KEY / UNIQUE list must exist (the error points at the one that does not). -/
+def checkIndexedCols (exists_ : String → Bool) (cols : List IndexedCol) : XS Unit := do
+  for ic in cols do
+    if ic.expr.isNone && !exists_ ic.name then throw ⟨.parse, s!"no such column: {ic.name}", ic.pos⟩
+
 def createIndexOn (t : Table) (name : String) (cols : List IndexedCol) (unique : Bool) (sql : Option String)
     (pred : Option Expr) : XS Unit := do
+  checkIndexedCols (t.colIndex? · |>.isSome) cols
+  -- an expression term and the WHERE are compiled over the table's row now
+  let s ← schemaX
+  for e in (cols.filterMap (·.expr)) ++ pred.toList do
+    let _ ← liftC ((compileExpr { schema := s, scopes := [tableScope t] } e fuel0).run {})
   let (ns, cs, ds) ← liftP (indexCols t cols)
   let p0 := (← get).pager
   let s0 ← schemaX
@@ -610,7 +620,22 @@ def createTable (name : String) (ifNotExists : Bool) (cols : List ColumnDef) (co
   let colNames := cols.map (·.name)
   for c in colNames do
     if (colNames.filter (nameEq · c)).length > 1 then parseErr s!"duplicate column name: {c}"
+  for c in cons do
+    match c with
+    | .primaryKey ics _ | .unique ics => checkIndexedCols (fun n => colNames.any (nameEq · n)) ics
+    | _ => pure ()
   let (t0, autos) ← liftP (tableOfDef name 0 cols cons sql withoutRowid)
+  -- CHECKs compile over the new table's row, DEFAULTs over no row
+  for c in cols do
+    for e in c.check do
+      let _ ← liftC ((compileExpr { schema := s, scopes := [tableScope t0] } e fuel0).run {})
+    if let some d := c.default then
+      match (compileExpr { schema := s, scopes := [] } d fuel0).run {} with
+      | .ok _ => pure ()
+      | .error _ => parseErr s!"default value of column [{c.name}] is not constant"
+  for c in cons do
+    if let .check e := c then
+      let _ ← liftC ((compileExpr { schema := s, scopes := [tableScope t0] } e fuel0).run {})
   -- sqlite_sequence first, for the first AUTOINCREMENT table
   if t0.autoinc && (s.table? "sqlite_sequence").isNone then
     let r ← modifyGet fun db => let (r, p) := BTree.create db.pager .table; (r, { db with pager := p })
@@ -1308,7 +1333,6 @@ def exec1 (st : Stmt) : Nat → XS Result
   | .createView n ine cols q sql =>
     if (← schemaX).exists? n then
       if ine then return {} else parseErr s!"view {n} already exists"
-    let _ ← compileQ q
     let temp := (← get).inTemp
     if temp then modPager Pager.ensureTemp
     addSchemaRow "view" n n 0 (some sql) temp
