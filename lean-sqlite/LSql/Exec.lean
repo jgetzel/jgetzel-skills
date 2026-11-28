@@ -331,14 +331,14 @@ def writeRow (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (
       | .replace => modPager (deleteRowP idxs t other)
       | _ => runErr (uniqueMsg t ix.toIndex)
     | none => pure ()
-  -- the old row and its index entries go (but for the entries a kept index has already), then the new row and its
-  -- index entries
+  -- the old row and its index entries go (but for the entries a kept index has already; a row that keeps its rowid is
+  -- not deleted, the insert replaces its cell in place), then the new row and its index entries
   match oldRowid, old with
   | some o, some o' =>
     modPager fun p =>
       let p := idxs.foldl (fun p ix =>
         if kept ix then p else BTree.indexDelete p ix.keyInfo ix.root (indexVals ix o'.row o)) p
-      BTree.tableDelete p t.root o
+      if o == rowid then p else BTree.tableDelete p t.root o
   | some o, none => modPager (deleteRowP idxs t o)
   | none, _ => pure ()
   let rec_ := match old with
