@@ -199,6 +199,33 @@ where
       | .eq => go ha (pa + la) (oa + serialLen ta) (i+1) fuel
       | o => if ki.desc.getD i false then o.swap else o
 
+/-- ORDER BY's order of two key values from whether each is NULL and `cmp`, their order when neither is: NULLs first
+or last apart from DESC, the others reversed for DESC. -/
+@[inline] def keyOrder (desc nullsFirst aNull bNull : Bool) (cmp : Unit → Ordering) : Ordering :=
+  match aNull, bNull with
+  | true, true => .eq
+  | true, false => if nullsFirst then .lt else .gt
+  | false, true => if nullsFirst then .gt else .lt
+  | false, false => let o := cmp (); if desc then o.swap else o
+
+/-- ORDER BY's order on the leading fields of two sort records, one field per key of `dirs` (DESC, NULLS FIRST,
+collation), decoding nothing. -/
+def cmpSortRecords (dirs : Array (Bool × Bool × Collation)) (a b : ByteArray) : Ordering :=
+  let (ha, ka) := getVarint a 0
+  let (hb, kb) := getVarint b 0
+  go ha.toNat hb.toNat ka kb ha.toNat hb.toNat 0 dirs.size
+where
+  go (ha hb pa pb oa ob i : Nat) : Nat → Ordering
+    | 0 => .eq
+    | f+1 =>
+      if pa ≥ ha || pb ≥ hb then .eq else
+      let (ta, la) := getVarint a pa
+      let (tb, lb) := getVarint b pb
+      let (desc, nullsFirst, coll) := dirs.getD i (false, true, .binary)
+      match keyOrder desc nullsFirst (serialClass ta == 0) (serialClass tb == 0) fun _ => cmpField coll a ta oa b tb ob with
+      | .eq => go ha hb (pa + la) (pb + lb) (oa + serialLen ta) (ob + serialLen tb) (i+1) f
+      | o => o
+
 /-- `cmpRecords` on the fields' values, for entries not yet encoded: the same order, without decoding. -/
 def cmpEntries (ki : KeyInfo) (a b : Array Value) : Ordering :=
   go 0 (min a.size b.size)

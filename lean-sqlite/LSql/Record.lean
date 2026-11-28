@@ -104,6 +104,18 @@ where
       let (t, k) := getVarint p pos
       if i == 0 then decodeField p body t else go hs (pos + k) (body + serialLen t) (i - 1) fuel
 
+/-- The serial type and body offset of field `i` of a record (none past its last field). -/
+def recordField? (p : ByteArray) (i : Nat) : Option (UInt64 × Nat) :=
+  let (hs, k) := getVarint p 0
+  go hs.toNat k hs.toNat i (p.size + 1)
+where
+  go (hs : Nat) (pos body : Nat) (i : Nat) : Nat → Option (UInt64 × Nat)
+    | 0 => none
+    | fuel+1 =>
+      if pos ≥ hs then none else
+      let (t, k) := getVarint p pos
+      if i == 0 then some (t, body) else go hs (pos + k) (body + serialLen t) (i - 1) fuel
+
 /-- The number of columns in a record. -/
 def recordArity (p : ByteArray) : Nat := (recordFields p).size
 
