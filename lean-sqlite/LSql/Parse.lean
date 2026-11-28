@@ -903,6 +903,10 @@ def parseSelect : Nat → P Select
     | _ => pure ()
     let first ← parseCore f
     let rest ← compoundRest f []
+    -- a VALUES core that ends the SELECT takes no ORDER BY or LIMIT (parse.y: they belong to the select, not to values)
+    match (rest.getLast?.map (·.2)).getD first, ← curKind with
+    | .values _, .kORDER | .values _, .kLIMIT => synErr
+    | _, _ => pure ()
     let orderBy ← if (← curKind) == .kORDER then do
         advance
         expect .kBY
