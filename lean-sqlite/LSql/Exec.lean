@@ -27,7 +27,7 @@ def tableScope (t : Table) (name : String := t.name) : Scope :=
   { srcs := #[{ name, cols := t.names, affs := t.affs, colls := t.colls, base := 0, rowid := some t.cols.size }] }
 
 /-- An expression compiled once, to run on many rows. -/
-def cfn (e : CExpr) : CFn := e.compile (fun env q => runSel env q (fuel0 - 1)) (fuel0 - 1)
+def cfn (e : CExpr) : CFn := e.compile (fun q env => runSel env q (fuel0 - 1)) (fuel0 - 1)
 
 /-- An index with its expressions compiled once per statement: `terms` are the key terms of an expression index
 (none: the column itself; an expression that does not compile is NULL), `holds` is a partial index's WHERE (an
