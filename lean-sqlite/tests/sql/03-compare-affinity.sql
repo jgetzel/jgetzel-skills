@@ -15,3 +15,16 @@ select cast('5' as integer) = 5, '5' + 0 = 5, typeof('5'+0), typeof('5.0'+0), ty
 select min(1,'a',2.5), max(1,'a',2.5), min('b','a'), max(1,null,3);
 select 1 = 1.0, typeof(1 = 1), 0.5 = '0.5';
 select 'a' < 'B', 'a' collate nocase < 'B', 'abc' = 'ABC' collate nocase, 'abc  ' = 'abc' collate rtrim;
+create table big(a integer primary key, r real, s real);
+create index big_r on big(r);
+insert into big values (4, 9007199254740993, 9007199254740993), (5, 9007199254740992, 9007199254740992), (6, 5, 5);
+select a from big where r = 9007199254740993;
+select a from big where r = 9007199254740992;
+select a from big where r = '9007199254740993';
+select a from big where r < 9007199254740993 order by a;
+select a from big where r >= 9007199254740993 order by a;
+select a from big where +r = 9007199254740993;
+select a from big where r in (9007199254740993);
+select a from big where r = 5;
+select a from big indexed by big_r where r > 9007199254740992;
+select a from big where r = s and r = 9007199254740993;

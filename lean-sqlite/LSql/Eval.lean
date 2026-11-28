@@ -61,8 +61,8 @@ instance : BEq Value where
 
 /-- A comparison after applying the comparison affinity to both sides (NULL unless IS / IS NOT). -/
 def compareV (op : BinOp) (aff : Aff) (coll : Collation) (a b : Value) : Value :=
-  let a := Value.applyAff aff a
-  let b := Value.applyAff aff b
+  let a := Value.applyCmpAff aff a
+  let b := Value.applyCmpAff aff b
   match op with
   | .is => boolV (isSame a b)
   | .isNot => boolV (!isSame a b)
@@ -694,7 +694,7 @@ def buildAuto (src : CSource) (width : Nat) (keys : Array (Nat × CExpr × Aff �
   let count := if raw.isEmpty then rows.size else raw.size
   let entries := count.fold (fun j _ (acc : Array (Array Value × Nat)) =>
     let fr := bindCand src need frame raw rows j
-    let key := keys.map fun (s, _, aff, _) => Value.applyAff aff (fr.getD s .null)
+    let key := keys.map fun (s, _, aff, _) => Value.applyCmpAff aff (fr.getD s .null)
     if key.any (·.isNull) then acc else acc.push (key, j)) #[]
   let colls := keys.map (·.2.2.2)
   { raw, rows, keys := sortBy entries fun a b => cmpAutoKey colls a.1 b.1 }
@@ -791,7 +791,7 @@ def LitCond.holds (c : LitCond) (rec_ : ByteArray) (t : UInt64) (o : Nat) : Bool
     let v := match decodeField rec_ o t with
       | .int x => if c.real then .real x.toFloat else .int x
       | v => v
-    cmpHolds c.ords c.coll (Value.applyAff c.aff v) c.lit
+    cmpHolds c.ords c.coll (Value.applyCmpAff c.aff v) c.lit
 
 /-- Whether a record passes every condition (`lits` in column order): its header read once, the fields compared in place. -/
 def litsPass (lits : Array LitCond) (rec_ : ByteArray) : Bool :=
@@ -806,7 +806,7 @@ where
       | none => true
       | some c =>
         if pos ≥ hs then
-          cmpHolds c.ords c.coll (Value.applyAff c.aff c.dflt) c.lit && go hs pos body i (j+1) f
+          cmpHolds c.ords c.coll (Value.applyCmpAff c.aff c.dflt) c.lit && go hs pos body i (j+1) f
         else
         let (t, l) := getVarint rec_ pos
         if i < c.col then go hs (pos + l) (body + serialLen t) (i+1) j f
@@ -931,7 +931,7 @@ def inList (fx : CFn) (fs : Array CFn) (neg : Bool) (aff : Aff) (coll : Collatio
 def inVals (fx : CFn) (vals : Array Value) (hasNull neg : Bool) (aff : Aff) (coll : Collation) : CFn := ⟨fun env => do
   let v ← fx.run env
   if v.isNull then return .null
-  if memSorted coll vals (Value.applyAff aff v) then return boolV (!neg)
+  if memSorted coll vals (Value.applyCmpAff aff v) then return boolV (!neg)
   return if hasNull then .null else boolV neg⟩
 
 def inSel (sub : SubRun) (q : CSel) (fx : CFn) (neg : Bool) (aff : Aff) (coll : Collation) : CFn := ⟨fun env => do
@@ -1013,19 +1013,19 @@ def isCmp (op : BinOp) (aff : Aff) (coll : Collation) (fa fb : CFn) : CTruth := 
 /-- A comparison other than IS / IS NOT, decided by `t` on operands the comparison affinity was applied to: a column
 read where it is, a literal (`w`) with the affinity applied already. -/
 @[specialize] def cmpColLit (t : Value → Value → β) (aff : Aff) (d i : Nat) (w : Value) : Compiled β :=
-  ⟨fun env => .ok (t (Value.applyAff aff (env.col d i)) w)⟩
+  ⟨fun env => .ok (t (Value.applyCmpAff aff (env.col d i)) w)⟩
 @[specialize] def cmpLitCol (t : Value → Value → β) (aff : Aff) (w : Value) (d i : Nat) : Compiled β :=
-  ⟨fun env => .ok (t w (Value.applyAff aff (env.col d i)))⟩
+  ⟨fun env => .ok (t w (Value.applyCmpAff aff (env.col d i)))⟩
 @[specialize] def cmpColCol (t : Value → Value → β) (aff : Aff) (d i d' j : Nat) : Compiled β :=
-  ⟨fun env => .ok (t (Value.applyAff aff (env.col d i)) (Value.applyAff aff (env.col d' j)))⟩
+  ⟨fun env => .ok (t (Value.applyCmpAff aff (env.col d i)) (Value.applyCmpAff aff (env.col d' j)))⟩
 @[specialize] def cmpLit (t : Value → Value → β) (aff : Aff) (fa : CFn) (w : Value) : Compiled β :=
-  ⟨fun env => do return t (Value.applyAff aff (← fa.run env)) w⟩
+  ⟨fun env => do return t (Value.applyCmpAff aff (← fa.run env)) w⟩
 @[specialize] def litCmp (t : Value → Value → β) (aff : Aff) (w : Value) (fb : CFn) : Compiled β :=
-  ⟨fun env => do return t w (Value.applyAff aff (← fb.run env))⟩
+  ⟨fun env => do return t w (Value.applyCmpAff aff (← fb.run env))⟩
 @[specialize] def cmp (t : Value → Value → β) (aff : Aff) (fa fb : CFn) : Compiled β := ⟨fun env => do
   let x ← fa.run env
   let y ← fb.run env
-  return t (Value.applyAff aff x) (Value.applyAff aff y)⟩
+  return t (Value.applyCmpAff aff x) (Value.applyCmpAff aff y)⟩
 
 /-- Values with their JSON subtype. -/
 def jsonCall (name : String) (fs : Array CFnJ) : CFnJ := ⟨fun env => do
@@ -1049,11 +1049,11 @@ end Compiled
 operand's applied once, a column operand read where it is. -/
 @[specialize] def cmpWith (t : Value → Value → β) (aff : Aff) (a b : CExpr) (fa fb : CFn) : Compiled β :=
   match a, b with
-  | .col d i, .lit w => Compiled.cmpColLit t aff d i (Value.applyAff aff w)
-  | .lit w, .col d i => Compiled.cmpLitCol t aff (Value.applyAff aff w) d i
+  | .col d i, .lit w => Compiled.cmpColLit t aff d i (Value.applyCmpAff aff w)
+  | .lit w, .col d i => Compiled.cmpLitCol t aff (Value.applyCmpAff aff w) d i
   | .col d i, .col d' j => Compiled.cmpColCol t aff d i d' j
-  | _, .lit w => Compiled.cmpLit t aff fa (Value.applyAff aff w)
-  | .lit w, _ => Compiled.litCmp t aff (Value.applyAff aff w) fb
+  | _, .lit w => Compiled.cmpLit t aff fa (Value.applyCmpAff aff w)
+  | .lit w, _ => Compiled.litCmp t aff (Value.applyCmpAff aff w) fb
   | _, _ => Compiled.cmp t aff fa fb
 
 mutual
@@ -1167,7 +1167,7 @@ where
     if ord && base ≤ s && s < base + n && ipk != some (s - base) then
       let k := s - base
       let ords := OrdSet.of op
-      some { col := k, ords := if flip then ords.swap else ords, coll, aff, lit := Value.applyAff aff w,
+      some { col := k, ords := if flip then ords.swap else ords, coll, aff, lit := Value.applyCmpAff aff w,
              real := rc.getD k false, dflt := dv.getD k .null }
     else none
 
@@ -1301,7 +1301,7 @@ def hoist (env : Env) : CExpr → Nat → EM CExpr
     let rows ← runSel env q fuel
     let vs := rows.map (·.getD 0 .null)
     let hasNull := vs.any (·.isNull)
-    let vs := sortBy ((vs.filter (!·.isNull)).map (Value.applyAff aff)) (cmpValues coll)
+    let vs := sortBy ((vs.filter (!·.isNull)).map (Value.applyCmpAff aff)) (cmpValues coll)
     return .inVals x vs hasNull neg aff coll
   | .arith op a b => do return .arith op (← hoist env a fuel) (← hoist env b fuel)
   | .cmp op a b aff coll => do return .cmp op (← hoist env a fuel) (← hoist env b fuel) aff coll
@@ -1768,7 +1768,7 @@ def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row
       let keys := src.autoKeys
       let mut probe : Array Value := #[]
       for (x, aff) in run.auto do
-        let v := Value.applyAff aff (← x.run e)
+        let v := Value.applyCmpAff aff (← x.run e)
         if v.isNull then return (#[], #[])
         probe := probe.push v
       return autoSeek ai.get (keys.map (·.2.2.2)) probe
@@ -1810,17 +1810,17 @@ def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row
       | .index iroot ki eqs lo hi => do
         let mut eqv : Array Value := #[]
         for (x, aff) in eqs do
-          let v := Value.applyAff aff (← x.run e)
+          let v := Value.applyCmpAff aff (← x.run e)
           if v.isNull then return (#[], #[])
           eqv := eqv.push v
         let lov ← match lo with
           | some (x, _, aff) => do
-            let v := Value.applyAff aff (← x.run e)
+            let v := Value.applyCmpAff aff (← x.run e)
             pure (if v.isNull then none else some v)
           | none => pure none
         let hiv ← match hi with
           | some (x, incl, aff) => do
-            let v := Value.applyAff aff (← x.run e)
+            let v := Value.applyCmpAff aff (← x.run e)
             pure (if v.isNull then none else some (v, incl))
           | none => pure none
         let eqProbe := encodeRecord eqv
