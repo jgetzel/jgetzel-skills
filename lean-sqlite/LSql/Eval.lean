@@ -1273,8 +1273,7 @@ conditions after them (a later condition may fail on a row an earlier one reject
 def litSplit (fuel : Nat) (s : CSource) (conds : Array CExpr) : Array LitCond × Array CExpr :=
   match s with
   | .table _ n ipk rc dv base access false false layout _ =>
-    let scan := match access with | .full | .rowidRange _ _ => true | _ => false
-    if !scan || !layout.isEmpty then (#[], conds) else
+    if !access.isScan || !layout.isEmpty then (#[], conds) else
     let cs := conds.foldl (fun acc c => acc ++ (foldConst c fuel).conjuncts 64) #[]
     let k := (cs.findIdx? fun c => (litCondOf base n ipk rc dv c).isNone).getD cs.size
     let lits := (cs.extract 0 k).filterMap (litCondOf base n ipk rc dv)
@@ -1376,12 +1375,7 @@ def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
   | .values .. => default
   | .select srcs pre filters groupBy _ having cols _ order aggs _ _ width wins =>
     let srcExprs := srcs.foldl (fun acc s => match s with
-      | .table _ _ _ _ _ _ acc' _ _ _ on => acc ++ on ++ (match acc' with
-        | .rowidEq e => #[e] | .rowidIn es => es
-        | .rowidRange lo hi => (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
-        | .index _ _ eqs lo hi => eqs.map (·.1) ++ (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
-        | .auto keys => keys.map (·.2.1)
-        | .full => #[])
+      | .table _ _ _ _ _ _ acc' _ _ _ on => acc ++ on ++ acc'.exprs
       | .sub _ _ _ _ _ on keys | .cte _ _ _ _ _ on keys => acc ++ on ++ keys.map (·.2.1)
       | .tvf _ args _ _ _ _ on => acc ++ args ++ on) #[]
     let aggArgs := aggs.foldl (fun acc (.mk _ _ _ args _ f) => acc ++ args ++ f.toArray) #[]
@@ -1427,8 +1421,7 @@ def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
       -- (only for a scan: a lookup's few rows are not worth it)
       match s with
       | .table _ _ _ _ _ _ access _ _ layout _ =>
-        let scan := match access with | .full | .rowidRange _ _ => true | _ => false
-        if conds.isEmpty || !layout.isEmpty || !scan then (need, #[]) else
+        if conds.isEmpty || !layout.isEmpty || !access.isScan then (need, #[]) else
         let first := neededSlots width conds
         (first, need.mapIdx fun k b => b && !first.getD k false)
       | _ => (need, #[])
@@ -1451,9 +1444,105 @@ def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
       having := having.map (·.compileTrue sub fuel), cols := cols.map (·.compile sub fuel),
       order := order.map (·.compile sub fuel), need, needs, late, keys }
 
+/-- An ordered scan's rows not read yet: its next chunk (at most `n` rows) and what follows it (none: the scan is over). -/
+structure Rest where
+  next : Nat → Array (Int64 × ByteArray) × Option Rest
+
+namespace Rest
+def empty : Rest := ⟨fun _ => (#[], none)⟩
+
+/-- Up to `n` rows from cursor `c` on. `read c`: none when the scan is over before `c`, some none for an entry to skip, else
+its row; `step`: the next entry. The cursor after them, when the scan goes on. -/
+def take (read : BTree.Cursor → Option (Option (Int64 × ByteArray))) (step : BTree.Cursor → BTree.Cursor) (n : Nat)
+    (c : BTree.Cursor) (acc : Array (Int64 × ByteArray)) : Nat → Array (Int64 × ByteArray) × Option BTree.Cursor
+  | 0 => (acc, none)
+  | f+1 =>
+    if acc.size ≥ n then (acc, some c) else
+    match read c with
+    | none => (acc, none)
+    | some none => take read step n (step c) acc f
+    | some (some r) => take read step n (step c) (acc.push r) f
+
+/-- A cursor scan read in chunks (`b`: an upper bound on the entries and chunks). -/
+def scan (read : BTree.Cursor → Option (Option (Int64 × ByteArray))) (step : BTree.Cursor → BTree.Cursor) (c : BTree.Cursor) :
+    Nat → Rest
+  | 0 => empty
+  | b+1 => ⟨fun n =>
+    let (rows, c') := take read step n c #[] b
+    (rows, c'.map fun c' => scan read step c' b)⟩
+end Rest
+
+/-- A table's rows from rowid `lo` to `hi` that pass `keep`, in rowid order or backwards. -/
+def tableRest (p : Pager) (root : Pgno) (lo hi : Option Int64) (desc : Bool) (keep : ByteArray → Bool) : Rest :=
+  let c := if desc then (match hi with | some h => BTree.Cursor.seekRowidLE p root h | none => BTree.Cursor.last p root)
+    else (match lo with | some l => BTree.Cursor.seekRowid p root l | none => BTree.Cursor.first p root)
+  let read (c : BTree.Cursor) : Option (Option (Int64 × ByteArray)) :=
+    match c.row p with
+    | none => none
+    | some (k, r) =>
+      if (if desc then lo.any (k < ·) else hi.any (k > ·)) then none else some (if keep r then some (k, r) else none)
+  Rest.scan read (if desc then BTree.Cursor.prev p else BTree.Cursor.next p) c (BTree.entryBound p)
+
+/-- An index access's probe values: its equality values (none when one is NULL), then its lower and upper bounds. -/
+def indexProbes (e : Env) (eqs : Array (CFn × Aff)) (lo : Option (CFn × Bool × Aff)) (hi : Option (CFn × Bool × Aff)) :
+    EM (Option (Array Value × Option Value × Option (Value × Bool))) := do
+  let mut eqv : Array Value := #[]
+  for (x, aff) in eqs do
+    let v := Value.applyCmpAff aff (← x e)
+    if v.isNull then return none
+    eqv := eqv.push v
+  let lov ← match lo with
+    | some (x, _, aff) =>
+      do
+        let v := Value.applyCmpAff aff (← x e)
+        pure (if v.isNull then none else some v)
+    | none => pure none
+  let hiv ← match hi with
+    | some (x, incl, aff) =>
+      do
+        let v := Value.applyCmpAff aff (← x e)
+        pure (if v.isNull then none else some (v, incl))
+    | none => pure none
+  return some (eqv, lov, hiv)
+
+/-- The rows of an index's range, found in the table, in index order or backwards (equal keys then by rowid, descending). -/
+def indexRest (p : Pager) (root iroot : Pgno) (ki : KeyInfo) (eqv : Array Value) (lov : Option Value)
+    (hiv : Option (Value × Bool)) (desc : Bool) : Rest :=
+  let neq := eqv.size
+  let c := if !desc then
+      -- with no lower bound, NULL entries (which sort first) are skipped by starting after them
+      BTree.Cursor.seekKey p ki iroot (match lov, hiv with
+        | some v, _ => eqv.push v
+        | none, some _ => eqv.push (Value.real (-1.0/0.0))
+        | none, none => eqv)
+    else match hiv with
+      | some (h, incl) =>
+        -- (the entries equal to `h` are after the range unless it includes them)
+        let hp := eqv.push h
+        BTree.Cursor.before p iroot (if incl then BTree.Cursor.seekKeyAfter p ki iroot hp else BTree.Cursor.seekKey p ki iroot hp)
+      | none => if eqv.isEmpty then BTree.Cursor.last p iroot
+        else BTree.Cursor.before p iroot (BTree.Cursor.seekKeyAfter p ki iroot eqv)
+  let coll := ki.colls.getD neq .binary
+  let read (c : BTree.Cursor) : Option (Option (Int64 × ByteArray)) :=
+    match c.key p with
+    | none => none
+    | some k =>
+      if neq > 0 && cmpRecordProbe ki k eqv != .eq then none else
+      let v := if lov.isSome || hiv.isSome then recordColumn k neq else .null
+      let past := match hiv with
+        | some (h, incl) => !v.isNull && (let o := cmpValues coll v h; o == .gt || (!incl && o == .eq))
+        | none => false
+      let below := match lov with
+        | some l => v.isNull || cmpValues coll v l == .lt
+        | none => hiv.isSome && v.isNull
+      if past || below then none else
+      let rid := match recordLast k with | .int r => r | _ => 0
+      some ((BTree.tableFind p root rid).map fun cell => (rid, cell.payload))
+  Rest.scan read (if desc then BTree.Cursor.prev p else BTree.Cursor.next p) c (BTree.entryBound p)
+
 /-- The rows a FROM item offers for the current frame: a table's (rowid, record) pairs through its access path, or a
 subquery's or WITH table's rows. `auto`: the item's transient index. -/
-def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) :
+def candidatesAll (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) :
     Nat → EM (Array (Int64 × ByteArray) × Array Row)
   | 0 => .error "query nested too deeply"
   | _+1 => do
@@ -1501,21 +1590,7 @@ def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row
           | none => pure none
         return dec (scanRange p root lo' hi' (litsPass run.lits))
       | .index iroot ki eqs lo hi => do
-        let mut eqv : Array Value := #[]
-        for (x, aff) in eqs do
-          let v := Value.applyCmpAff aff (← x e)
-          if v.isNull then return (#[], #[])
-          eqv := eqv.push v
-        let lov ← match lo with
-          | some (x, _, aff) => do
-            let v := Value.applyCmpAff aff (← x e)
-            pure (if v.isNull then none else some v)
-          | none => pure none
-        let hiv ← match hi with
-          | some (x, incl, aff) => do
-            let v := Value.applyCmpAff aff (← x e)
-            pure (if v.isNull then none else some (v, incl))
-          | none => pure none
+        let some (eqv, lov, hiv) ← indexProbes e eqs lo hi | return (#[], #[])
         -- with no lower bound, NULL entries (which sort first) are skipped by starting after them
         let probe := match lov with
           | some v => eqv.push v
@@ -1524,6 +1599,37 @@ def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row
         return dec (rids.foldl (fun acc k => acc ++ find k) #[])
       -- with no transient index passed in (a RIGHT JOIN's own pass), the whole table
       | .auto _ => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
+      | .ordered _ _ => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
+
+/-- A FROM item's candidate rows: those of `candidatesAll`, or (an ordered access path) a lazy scan of the table in order,
+whose first chunk is still to be read (`Rest`). -/
+def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) :
+    Nat → EM (Array (Int64 × ByteArray) × Array Row × Option Rest)
+  | 0 => .error "query nested too deeply"
+  | fuel+1 => do
+    match run.access, src with
+    | .ordered desc a, .table root .. =>
+      let p := e.pager
+      match a with
+      | .full => return (#[], #[], some (tableRest p root none none desc (litsPass run.lits)))
+      | .rowidRange lo hi =>
+        let lo' ← match lo with
+          | some (x, incl) => do let v ← x e; pure (boundRowid v incl true)
+          | none => pure none
+        let hi' ← match hi with
+          | some (x, incl) => do let v ← x e; pure (boundRowid v incl false)
+          | none => pure none
+        return (#[], #[], some (tableRest p root lo' hi' desc (litsPass run.lits)))
+      | .index iroot ki eqs lo hi =>
+        match ← indexProbes e eqs lo hi with
+        | some (eqv, lov, hiv) => return (#[], #[], some (indexRest p root iroot ki eqv lov hiv desc))
+        | none => return (#[], #[], none)
+      | a =>
+        let (raw, cs) ← candidatesAll e src { run with access := a } sub auto fuel
+        return (raw, cs, none)
+    | _, _ =>
+      let (raw, cs) ← candidatesAll e src run sub auto fuel
+      return (raw, cs, none)
 
 /-- The nested-loop join from FROM item `i` on: each candidate row of the item bound into the frame, its conditions
 checked, then the later items; each joined frame goes to `emit` (with the items' `RowRef`s when `track`), until `stop`
@@ -1542,21 +1648,34 @@ def joinFrom (emit : σ → Env → Array RowRef → EM σ) (stop : σ → Bool)
       | .cte _ n base left right _ _ => (base, n, left, right)
       | .tvf _ _ n base left right _ => (base, n, left, right)
     let run := runs.getD i default
-    let (raw, cands) ← candidates e src run (subs.getD i none) (autos.getD i none) fuel
+    let (raw, cands, more) ← candidates e src run (subs.getD i none) (autos.getD i none) fuel
     let (first, rest) := needs.getD i (#[], #[])
     let mut acc := acc
     let mut matched := false
-    let count := if raw.isEmpty then cands.size else raw.size
-    for j in [0:count] do
-      if stop acc.1 then break
-      let ej := e.modifyTop (bindCand src first · raw cands j)
-      if left || right then
-        unless ← run.on ej do continue
-      matched := true
-      if right then acc := (acc.1, acc.2.setIfInBounds j true)
-      if ← run.resid ej then
-        let ej := ej.modifyTop (bindRest src rest · raw j)
-        acc ← joinFrom emit stop track ej srcs runs subs autos needs (i+1) (if track then refs.push raw[j]? else refs) acc fuel
+    -- an ordered scan's rows come in chunks, each larger than the last, only while `stop` has not held
+    let mut raw := raw
+    let mut more := more
+    let mut want := 16
+    for _ in [0:BTree.entryBound e.pager] do
+      let count := if raw.isEmpty then cands.size else raw.size
+      for j in [0:count] do
+        if stop acc.1 then break
+        let ej := e.modifyTop (bindCand src first · raw cands j)
+        if left || right then
+          unless ← run.on ej do continue
+        matched := true
+        if right then acc := (acc.1, acc.2.setIfInBounds j true)
+        if ← run.resid ej then
+          let ej := ej.modifyTop (bindRest src rest · raw j)
+          acc ← joinFrom emit stop track ej srcs runs subs autos needs (i+1) (if track then refs.push raw[j]? else refs) acc fuel
+      match more with
+      | some r =>
+        if stop acc.1 then break
+        let (rows, next) := r.next want
+        raw := rows
+        more := next
+        want := want * 4
+      | none => break
     if left && !matched then
       let en := e.modifyTop fun fr => n.fold (fun k _ (fr : Row) => fr.setIfInBounds (base + k) .null) fr
       if ← run.conds en then
@@ -1574,7 +1693,7 @@ def joinAll (emit : σ → Env → Array RowRef → EM σ) (stop : σ → Bool) 
     -- a RIGHT or FULL JOIN's item: its rows are counted once, and the join marks those some earlier row matched
     let rightCount ← match rightIdx with
       | some r => do
-        let (raw, cs) ← candidates (env.push frame0) (srcs.getD r default) (runs.getD r default) (subs.getD r none) none fuel
+        let (raw, cs, _) ← candidates (env.push frame0) (srcs.getD r default) (runs.getD r default) (subs.getD r none) none fuel
         pure (if raw.isEmpty then cs.size else raw.size)
       | none => pure 0
     let (acc, matched) ← if srcs.isEmpty then do pure (← emit init (env.push frame0) #[], #[])
@@ -1584,7 +1703,7 @@ def joinAll (emit : σ → Env → Array RowRef → EM σ) (stop : σ → Bool) 
     | none => return acc
     | some r =>
       let src := srcs.getD r default
-      let (raw, cs) ← candidates (env.push frame0) src (runs.getD r default) (subs.getD r none) none fuel
+      let (raw, cs, _) ← candidates (env.push frame0) src (runs.getD r default) (subs.getD r none) none fuel
       let mut acc : σ × Array Bool := (acc, #[])
       for j in [0:rightCount] do
         if matched.getD j true then continue
@@ -1682,7 +1801,7 @@ def runSel (env : Env) : CSel → Nat → EM (Array Row)
     let mut i := 0
     for core in cores do
       let core ← hoistCore env core fuel
-      let rs ← runCore env none ord core (if i == 0 then hint else none) fuel
+      let rs ← runCore env none ord core (if i == 0 then hint else none) (if cores.size == 1 && dirs.isEmpty then off else 0) fuel
       if i == 0 then acc := rs else
         match ops[i - 1]? with
         | some .unionAll => acc := acc ++ rs
@@ -1710,7 +1829,7 @@ def runRecursive (env : Env) (id : Nat) : CSel → Nat → EM (Array Row)
       | some e => do let v ← eval env e fuel; let i := Num.castToInt v; pure (if i < 0 then none else some i.toNatClampNeg)
       | none => pure none
     let anchor ← hoistCore env anchor fuel
-    let init := (← runCore env none none anchor none fuel).map (·.1)
+    let init := (← runCore env none none anchor none 0 fuel).map (·.1)
     -- the recursive core runs once per queued row: compiled once
     let recurC := recur.compile (fun env q => runSel env q fuel) fuel
     let init := if distinct then (firstOccurrences init).map (init.getD · #[]) else init
@@ -1723,7 +1842,7 @@ def runRecursive (env : Env) (id : Nat) : CSel → Nat → EM (Array Row)
       qi := qi + 1
       let cs := if env.ctes.size ≤ id then env.ctes ++ Array.replicate (id + 1 - env.ctes.size) #[] else env.ctes
       let env' := { env with ctes := cs.setIfInBounds id #[row] }
-      let rs := (← runCore env' (some recurC) none recur none fuel).map (·.1)
+      let rs := (← runCore env' (some recurC) none recur none 0 fuel).map (·.1)
       for r in rs do
         if distinct && result.any (cmpRows · r == .eq) then continue
         result := result.push r
@@ -1733,15 +1852,15 @@ def runRecursive (env : Env) (id : Nat) : CSel → Nat → EM (Array Row)
 SELECT's, to be put in ORDER BY's order here (only the first `n` of them, when bounded); `hint`: enough rows (a LIMIT
 with no ORDER BY). -/
 def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bool × Collation) × Option Nat)) :
-    CCore → Option Nat → Nat → EM (Array (Row × Row))
-  | _, _, 0 => .error "query nested too deeply"
-  | .values rows order, _, fuel+1 => do
+    CCore → Option Nat → Nat → Nat → EM (Array (Row × Row))
+  | _, _, _, 0 => .error "query nested too deeply"
+  | .values rows order, _, _, fuel+1 => do
     let mut out := #[]
     for r in rows do
       let vs ← r.mapM fun e => eval env e fuel
       out := out.push (vs, order.map (vs.getD · .null))
     return match ord with | some (dirs, bound) => orderRows dirs bound out | none => out
-  | .select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width wins, hint, fuel+1 => do
+  | .select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width wins, hint, skip, fuel+1 => do
     let frame0 : Row := Array.replicate width .null
     -- the core's expressions, compiled once (or by the caller, for all its runs)
     let cr := pre?.getD ((CCore.select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width
@@ -1863,7 +1982,12 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
     -- window functions, over all the result rows
     let winCols ← wins.mapM fun w => winColumn envs w fuel
     let mut out := #[]
+    -- (rows no one asked for, below the OFFSET: none of their expressions run)
+    let skip := if isAgg || distinct || !wins.isEmpty then 0 else skip
     for i in [0:envs.size] do
+      if i < skip then
+        out := out.push (#[], #[])
+        continue
       let e := { (envs.getD i env) with wins := winCols.map (·.getD i .null) }
       let vs ← colsC.mapM (· e)
       let ks ← orderC.mapM (· e)

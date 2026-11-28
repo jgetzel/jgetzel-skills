@@ -571,6 +571,55 @@ def next (p : Pager) (c : Cursor) : Cursor :=
 def first (p : Pager) (root : Pgno) : Cursor :=
   settle p (descendFirst p #[] root maxDepth) (p.totalPages + maxDepth)
 
+/-- The path down the rightmost children from `pg`, ending one past the last entry of its leaf. -/
+def descendLast (p : Pager) (stack : Array (Pgno × Nat)) (pg : Pgno) : Nat → Array (Pgno × Nat)
+  | 0 => stack
+  | fuel+1 =>
+    match p.get pg with
+    | .table (.tinner _ kids) | .index (.iinner _ kids) =>
+      descendLast p (stack.push (pg, kids.size - 1)) (kids.getD (kids.size - 1) 0) fuel
+    | .table (.tleaf keys _ _) => stack.push (pg, keys.size)
+    | .index (.ileaf cells _) => stack.push (pg, cells.size)
+    | _ => stack
+
+/-- Moves the path back to the entry before its position (a leaf position `i` is before entry `i`; an interior frame
+`i` before child `i`). -/
+def unwind (p : Pager) (stack : Array (Pgno × Nat)) : Nat → Cursor
+  | 0 => {}
+  | fuel+1 =>
+    match stack.back? with
+    | none => {}
+    | some (pg, i) =>
+      match p.get pg with
+      | .table (.tleaf ..) | .index (.ileaf ..) =>
+        if i > 0 then { stack := stack.pop.push (pg, i-1) } else unwind p stack.pop fuel
+      | .table (.tinner _ kids) =>
+        if i > 0 then unwind p (descendLast p (stack.pop.push (pg, i-1)) (kids.getD (i-1) 0) maxDepth) fuel
+        else unwind p stack.pop fuel
+      | .index (.iinner ..) =>
+        if i > 0 then { stack := stack.pop.push (pg, i-1), atInner := true } else unwind p stack.pop fuel
+      | _ => {}
+
+/-- Steps to the previous entry (past the start: the end). -/
+def prev (p : Pager) (c : Cursor) : Cursor :=
+  match c.stack.back? with
+  | none => c
+  | some (pg, i) =>
+    let fuel := p.totalPages + maxDepth
+    if c.atInner then
+      match p.get pg with
+      | .index (.iinner _ kids) => unwind p (descendLast p c.stack (kids.getD i 0) maxDepth) fuel
+      | _ => {}
+    else unwind p c.stack fuel
+
+/-- The last entry of the tree. -/
+def last (p : Pager) (root : Pgno) : Cursor :=
+  unwind p (descendLast p #[] root maxDepth) (p.totalPages + maxDepth)
+
+/-- The entry before a seek's result `c` (the last entry of the tree when the seek ran off its end). -/
+def before (p : Pager) (root : Pgno) (c : Cursor) : Cursor :=
+  if c.atEnd then last p root else prev p c
+
 /-- The first row whose rowid is at least `rowid`. -/
 def seekRowid (p : Pager) (root : Pgno) (rowid : Int64) : Cursor :=
   settle p (go root #[] maxDepth) (p.totalPages + maxDepth)
@@ -597,6 +646,33 @@ where
       | .index (.ileaf cells _) => stack.push (pg, (searchRec ki cells probe).1)
       | .index (.iinner cells kids) =>
         let i := (searchRec ki cells probe).1
+        go (kids.getD i 0) (stack.push (pg, i)) fuel
+      | _ => stack
+
+/-- The last row whose rowid is at most `rowid`. -/
+def seekRowidLE (p : Pager) (root : Pgno) (rowid : Int64) : Cursor :=
+  if rowid == 9223372036854775807 then last p root else before p root (seekRowid p root (rowid + 1))
+
+/-- The first index entry after those `probe` is a prefix of. -/
+def seekKeyAfter (p : Pager) (ki : KeyInfo) (root : Pgno) (probe : Array Value) : Cursor :=
+  settle p (go root #[] maxDepth) (p.totalPages + maxDepth)
+where
+  /-- the first cell greater than the probe -/
+  upper (cells : Array Cell) (pr : Array Value) (lo hi : Nat) : Nat → Nat
+    | 0 => lo
+    | f+1 =>
+      if lo ≥ hi then lo else
+      let mid := (lo + hi) / 2
+      match cmpRecordProbe ki (cells.getD mid default).payload pr with
+      | .gt => upper cells pr lo mid f
+      | _ => upper cells pr (mid+1) hi f
+  go (pg : Pgno) (stack : Array (Pgno × Nat)) : Nat → Array (Pgno × Nat)
+    | 0 => stack
+    | fuel+1 =>
+      match p.get pg with
+      | .index (.ileaf cells _) => stack.push (pg, upper cells probe 0 cells.size 64)
+      | .index (.iinner cells kids) =>
+        let i := upper cells probe 0 cells.size 64
         go (kids.getD i 0) (stack.push (pg, i)) fuel
       | _ => stack
 
