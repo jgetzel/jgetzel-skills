@@ -796,6 +796,17 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
           | some s0 => (#[CCore.select (srcs.setIfInBounds 0 s0) pre f g gc h cols rc #[] aggs false false w #[]], #[])
           | none => (cores, dirs)
         else (cores, dirs)
+      -- a grouped SELECT comes out in its GROUP BY keys' order: an ORDER BY of those keys, ascending, needs no sort
+      | some (.select srcs pre f g gc h cols rc _ aggs true false w #[]), true =>
+        let groupBy := match first with | .select _ _ _ _ _ gb _ => gb | _ => []
+        let sameRef (a b : Expr) : Bool := match a, b with
+          | .col t1 n1 _ _, .col t2 n2 _ _ => nameEq n1 n2 && (match t1, t2 with | none, none => true | some x, some y => nameEq x y | _, _ => false)
+          | _, _ => false
+        let byKeys := !g.isEmpty && !orderBy.isEmpty && orderBy.length ≤ groupBy.length &&
+          (orderBy.zip groupBy).all fun (o, k) => match o with
+            | .mk e false none => sameRef e k
+            | _ => false
+        if byKeys then (#[CCore.select srcs pre f g gc h cols rc #[] aggs true false w #[]], #[]) else (cores, dirs)
       | _, _ => (cores, dirs)
     cores := cores'
     let cl ← match limit with
