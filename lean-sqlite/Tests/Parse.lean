@@ -129,8 +129,8 @@ def sStmtF : Nat → Stmt → String
         | .values rows => "values " ++ join (rows.map fun r => "(" ++ join (r.map sExpr) ++ ")")
         | .select q => sSelect q
         | .defaults => "defaults") ++ join (ups.map sUps)
-    | .update c t sets w => "update-" ++ seg (repr c) ++ " " ++ t ++ " set " ++ join (sets.map fun (n, e) => n ++ "=" ++ sExpr e) ++ (match w with | none => "" | some e => " where " ++ sExpr e)
-    | .delete t w => "delete " ++ t ++ (match w with | none => "" | some e => " where " ++ sExpr e)
+    | .update c t a sets w => "update-" ++ seg (repr c) ++ " " ++ t ++ (match a with | none => "" | some a => " as " ++ a) ++ " set " ++ join (sets.map fun (n, e) => n ++ "=" ++ sExpr e) ++ (match w with | none => "" | some e => " where " ++ sExpr e)
+    | .delete t a w => "delete " ++ t ++ (match a with | none => "" | some a => " as " ++ a) ++ (match w with | none => "" | some e => " where " ++ sExpr e)
     | .select q => sSelect q
     | .begin => "begin"
     | .commit => "commit"
@@ -260,7 +260,8 @@ def endPos (src : String) (pos : Nat) : String :=
 #guard p1 "insert into t(a) select 1 union select 2" == "insert-abort t (a) { select 1 <1> union select 2 <2>}"
 #guard p1 "update or ignore t set a=1, b=b+1 where c" == "update-ignore t set a=1 b=(add b 1) where c"
 #guard p1 "delete from t where a=1" == "delete t where (eq a 1)"
-#guard p1 "delete from main.t as x" == "delete \x00main\x00t"
+#guard p1 "delete from main.t as x" == "delete \x00main\x00t as x"
+#guard p1 "update t as q set a=1 where q.a" == "update-abort t as q set a=1 where q.a"
 #guard p1 "begin immediate transaction" == "begin"
 #guard p1 "begin" == "begin"
 #guard p1 "commit" == "commit"
