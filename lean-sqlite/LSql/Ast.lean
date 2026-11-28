@@ -56,12 +56,13 @@ inductive Expr where
   `-9223372036854775808` is folded to `int` Int64's minimum. TRUE and FALSE are `int 1`/`int 0`. -/
   | lit (v : Value)
   /-- A column reference `[table.]name`. `dq`: written as a "double-quoted" identifier with no table, which sqlite reads as
-  the string literal when no column has that name. -/
-  | col (table : Option String) (name : String) (dq : Bool)
+  the string literal when no column has that name. `pos` (here and in `fn`, `window`): the byte offset of the reference in the
+  statement it was parsed from, where sqlite3 reports an error in it. -/
+  | col (table : Option String) (name : String) (dq : Bool) (pos : Option Nat := none)
   | bin (op : BinOp) (a b : Expr)
   | un (op : UnOp) (a : Expr)
   /-- A function call: `name(DISTINCT? args)`; `star` for `count(*)` (args empty). -/
-  | fn (name : String) (distinct : Bool) (star : Bool) (args : List Expr)
+  | fn (name : String) (distinct : Bool) (star : Bool) (args : List Expr) (pos : Option Nat := none)
   /-- `CAST(e AS type)`: the type name as written, words joined by one space (`VARCHAR(10)` keeps its parenthesis). -/
   | cast (e : Expr) (type : String)
   | collate (e : Expr) (collation : String)
@@ -87,7 +88,7 @@ inductive Expr where
   | row (items : List Expr)
   /-- A window function call `name(args) [FILTER (WHERE f)] OVER (window | name)`; a named window (WINDOW clause) is
   substituted by the parser (its `base` merged as sqlite does). -/
-  | window (name : String) (distinct : Bool) (star : Bool) (args : List Expr) (filter : Option Expr) (over : Window)
+  | window (name : String) (distinct : Bool) (star : Bool) (args : List Expr) (filter : Option Expr) (over : Window) (pos : Option Nat := none)
   /-- `RAISE(IGNORE)`, `RAISE(ROLLBACK|ABORT|FAIL, 'message')` (in a trigger body). -/
   | raise (kind : RaiseKind) (msg : String)
 

@@ -24,11 +24,11 @@ def sE : Nat → Expr → String
   | 0, _ => "..."
   | f + 1, e => match e with
     | .lit v => sVal v
-    | .col none n dq => if dq then "\"" ++ n ++ "\"" else n
-    | .col (some t) n _ => t ++ "." ++ n
+    | .col none n dq _ => if dq then "\"" ++ n ++ "\"" else n
+    | .col (some t) n _ _ => t ++ "." ++ n
     | .bin op a b => "(" ++ sOp op ++ " " ++ sE f a ++ " " ++ sE f b ++ ")"
     | .un op a => "(" ++ seg (repr op) ++ " " ++ sE f a ++ ")"
-    | .fn n d s args => "(" ++ n ++ (if d then "!distinct" else "") ++ (if s then "*" else "") ++ (if args.isEmpty then "" else " " ++ join (args.map (sE f))) ++ ")"
+    | .fn n d s args _ => "(" ++ n ++ (if d then "!distinct" else "") ++ (if s then "*" else "") ++ (if args.isEmpty then "" else " " ++ join (args.map (sE f))) ++ ")"
     | .cast e t => "(cast " ++ sE f e ++ " " ++ t ++ ")"
     | .collate e c => "(collate " ++ sE f e ++ " " ++ c ++ ")"
     | .case b ws el => "(case " ++ sOpt (sE f) b ++ " " ++ join (ws.map fun (w, t) => "[" ++ sE f w ++ " " ++ sE f t ++ "]") ++ " " ++ sOpt (sE f) el ++ ")"
@@ -41,7 +41,7 @@ def sE : Nat → Expr → String
     | .subquery q => "(" ++ sSel f q ++ ")"
     | .param t => "param:" ++ t
     | .row xs => "(row " ++ join (xs.map (sE f)) ++ ")"
-    | .window n d s args flt w => "(" ++ n ++ (if d then "!distinct" else "") ++ (if s then "*" else "") ++ (if args.isEmpty then "" else " " ++ join (args.map (sE f)))
+    | .window n d s args flt w _ => "(" ++ n ++ (if d then "!distinct" else "") ++ (if s then "*" else "") ++ (if args.isEmpty then "" else " " ++ join (args.map (sE f)))
         ++ (match flt with | none => "" | some e => " filter " ++ sE f e) ++ " over " ++ sW f w ++ ")"
     | .raise k m => "(raise " ++ seg (repr k) ++ (if m == "" then "" else " '" ++ m ++ "'") ++ ")"
 
