@@ -740,9 +740,9 @@ def windowClause : Nat → P (List (String × Window))
     return defs
 
 /-- Function call arguments; the current token is the '('. -/
-def callArgs : Nat → String → P Expr
-  | 0, _ => synErr
-  | f + 1, name => do
+def callArgs : Nat → String → Option Nat → P Expr
+  | 0, _, _ => synErr
+  | f + 1, name, pos => do
     advance
     let k ← curKind
     let (distinct, star, args) ←
@@ -771,15 +771,15 @@ def callArgs : Nat → String → P Expr
       if !isOverAt (← get) then
         -- an aggregate's FILTER: carried as a last argument the compiler takes off (`filterTag`)
         match flt with
-        | some e => return .fn name distinct star (args ++ [.fn filterTag false false [e]])
+        | some e => return .fn name distinct star (args ++ [.fn filterTag false false [e]]) pos
         | none => synErr
       else
         if distinct then errAt "DISTINCT is not supported for window functions" ft.s
         if flt.isSome && windowOnlyFns.contains name.toLower then
           errAt "FILTER clause may only be used with aggregate window functions" ft.s
         let w ← parseOver f
-        return .window name distinct star args flt w
-    else return .fn name distinct star args
+        return .window name distinct star args flt w pos
+    else return .fn name distinct star args pos
 
 def nameExpr : Nat → Token → P Expr
   | 0, _ => synErr
@@ -787,8 +787,9 @@ def nameExpr : Nat → Token → P Expr
     let st ← get
     advance
     let name := nameOf st.src t
+    let pos := some t.s
     match ← curKind with
-    | .lp => callArgs f name
+    | .lp => callArgs f name pos
     | .dot =>
       advance
       let t2 ← curTok
@@ -800,14 +801,14 @@ def nameExpr : Nat → Token → P Expr
           let t3 ← curTok
           if isNmKind t3.kind then
             advance
-            return .col (some n2) (nameOf st.src t3) false
+            return .col (some n2) (nameOf st.src t3) false pos
           else synErr
-        else return .col (some name) n2 false
+        else return .col (some name) n2 false pos
       else synErr
     | _ =>
       match isTrueFalse st.src t with
       | some v => return .lit (.int v)
-      | none => return .col none name (t.kind == .dqid)
+      | none => return .col none name (t.kind == .dqid) pos
 
 def parsePrimary : Nat → P Expr
   | 0 => synErr
@@ -1764,7 +1765,7 @@ def withExpr (recursive : Bool) (ctes : List Cte) : Nat → Expr → Expr
     | .lit _ | .col .. | .param _ | .raise .. | .window .. => e
     | .bin op a b => .bin op (w a) (w b)
     | .un op a => .un op (w a)
-    | .fn n d s args => .fn n d s (args.map w)
+    | .fn n d s args p => .fn n d s (args.map w) p
     | .cast a t => .cast (w a) t
     | .collate a c => .collate (w a) c
     | .case b ws el => .case (b.map w) (ws.map fun (x, y) => (w x, w y)) (el.map w)

@@ -14,6 +14,8 @@ inductive ErrKind where
 structure Err where
   kind : ErrKind
   msg : String
+  /-- the byte offset in the statement's text that the error points at (a compile error that has one) -/
+  pos : Option Nat := none
   deriving Inhabited
 
 structure DB where
@@ -51,11 +53,15 @@ structure Result where
 
 abbrev XS := EStateM Err DB
 
-def parseErr {α : Type} (msg : String) : XS α := throw ⟨.parse, msg⟩
-def runErr {α : Type} (msg : String) : XS α := throw ⟨.runtime, msg⟩
+def parseErr {α : Type} (msg : String) : XS α := throw ⟨.parse, msg, none⟩
+def runErr {α : Type} (msg : String) : XS α := throw ⟨.runtime, msg, none⟩
 def liftP {α : Type} : Except String α → XS α
   | .ok a => pure a
   | .error e => parseErr e
+/-- A compile error: a parse error with the offset it points at. -/
+def liftC {α : Type} : Except CErr α → XS α
+  | .ok a => pure a
+  | .error e => throw ⟨.parse, e.msg, e.pos⟩
 def liftR {α : Type} : Except String α → XS α
   | .ok a => pure a
   | .error e => runErr e
@@ -82,7 +88,7 @@ def DB.ctxFrames (db : DB) : Array Row := match db.trig with | some (_, r) => #[
 
 def compileQ (q : Select) : XS (CSel × Array String × Array Aff) := do
   let s ← schemaX
-  let ((cq, names, affs, _), _) ← liftP ((compileSelect { schema := s, scopes := ← scopesX } q fuel0).run {})
+  let ((cq, names, affs, _), _) ← liftC ((compileSelect { schema := s, scopes := ← scopesX } q fuel0).run {})
   return (cq, names, affs)
 
 /-- Runs a query: its column names and rows. -/
@@ -94,7 +100,7 @@ def query (q : Select) : XS Result := do
 /-- Evaluates a constant expression (a DEFAULT). -/
 def evalConst (e : Expr) : XS Value := do
   let s ← schemaX
-  let ((c, _, _), _) ← liftP ((compileExpr { schema := s, scopes := ← scopesX } e fuel0).run {})
+  let ((c, _, _), _) ← liftC ((compileExpr { schema := s, scopes := ← scopesX } e fuel0).run {})
   liftR (eval (← envX) c fuel0)
 
 /-! ## sqlite_schema -/
@@ -277,7 +283,7 @@ where
 /-- A table's CHECK constraints compiled once per statement (one that does not compile fails when a row reaches it). -/
 def prepChecks (s : Schema) (t : Table) : Array (Except String CFn) :=
   t.checks.toArray.map fun c =>
-    (compileExpr { schema := s, scopes := [tableScope t] } c fuel0).run {} |>.map fun ((ce, _, _), _) => cfn ce
+    ((compileExpr { schema := s, scopes := [tableScope t] } c fuel0).run {}).mapError (·.msg) |>.map fun ((ce, _, _), _) => cfn ce
 
 /-- The first failing CHECK constraint's message for a row (with its rowid in the last slot). -/
 def checkRow (t : Table) (cks : Array (Except String CFn)) (frame : Row) : XS (Option String) := do
@@ -399,7 +405,7 @@ def matchingRowids (t : Table) (name : String) (w : Option Expr) : XS (Array Int
   let s ← schemaX
   let n := t.cols.size
   let cenv : CEnv := { schema := s, scopes := tableScope t name :: (← scopesX) }
-  let (conds, _) ← liftP ((compileList cenv (match w with | some w => conjuncts w 64 | none => []) fuel0).run {})
+  let (conds, _) ← liftC ((compileList cenv (match w with | some w => conjuncts w 64 | none => []) fuel0).run {})
   let conds := conds.map (·.1)
   -- the conditions that read no column are checked once, the others on each row
   let (pre, onRow) := conds.partition fun c => let (ss, corr) := slotsOf c 64; ss.isEmpty && !corr
@@ -754,7 +760,7 @@ def schemaOf (p : Pager) : Except Err Schema := do
   let rows := (schemaRowsOf p).map (fun r => (r, false)) ++ (schemaRowsOf p true).map (fun r => (r, true))
   let mut sch : Schema := {}
   let mut autos : Array (Table × List (List IndexedCol × Bool)) := #[]
-  let err (m : String) : Except Err Unit := .error ⟨.parse, m⟩
+  let err (m : String) : Except Err Unit := .error ⟨.parse, m, none⟩
   for ((_, vs), temp) in rows do
     let type := (vs.getD 0 .null).toText
     let name := (vs.getD 1 .null).toText
@@ -915,7 +921,8 @@ def fire (tm : TriggerTiming) (ev : TriggerEvent) (t : Table) (newRow oldRow : O
         modify fun db => { db with trig := sTrig, firing := sFiring, returned := sRet }
       catch e =>
         modify fun db => { db with trig := sTrig, firing := sFiring, returned := sRet }
-        throw e
+        -- the trigger's own text, not the statement's: its errors point nowhere in it
+        throw { e with pos := none }
 
 /-- The rows of a VALUES list whose terms are all literals and whose rows are as wide as the first: what running it gives. -/
 def literalRows (vs : List (List Expr)) : Option (Array (Array Value)) :=
@@ -976,7 +983,7 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
       { name := "excluded", cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
         base := t.cols.size + 1, rowid := some (2 * t.cols.size + 1), hidden := t.cols.map fun _ => true }] }
     let comp (e : Expr) : Except String CFn :=
-      (compileExpr { schema := s, scopes := upScope :: sc } e fuel0).run {} |>.map fun ((ce, _, _), _) => cfn ce
+      ((compileExpr { schema := s, scopes := upScope :: sc } e fuel0).run {}).mapError (·.msg) |>.map fun ((ce, _, _), _) => cfn ce
     pure (upserts.map fun u => (u, u.update.map fun (sets, w) => (w.map comp, sets.map fun (c, e) => (c, comp e))))
   -- one row can only fail before it writes: the statement journal is not needed
   if rows.size ≤ 1 && !hasTriggers && upserts.isEmpty then modPager Pager.noStmtJournal
@@ -1092,7 +1099,7 @@ def update (conflict : Conflict) (qtn : String) (alias : Option String) (sets : 
     let tgt ← match t.colIndex? c with
       | some i => pure (some i)
       | none => if !t.withoutRowid && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none else parseErr s!"no such column: {c}"
-    let ((ce, _, _), _) ← liftP ((compileExpr { schema := s, scopes := tableScope t nm :: sc } e fuel0).run {})
+    let ((ce, _, _), _) ← liftC ((compileExpr { schema := s, scopes := tableScope t nm :: sc } e fuel0).run {})
     pure (tgt, ce)
   let cfs := targets.map (cfn ·.2)
   let hasTriggers := s.triggers.any (nameEq ·.table t.name)
@@ -1375,9 +1382,9 @@ def exec1 (st : Stmt) : Nat → XS Result
         for k in [0:t.cols.size] do
           ces := ces.push (.col 0 k); names := names.push (t.cols.getD k default).name
       | .expr e alias span =>
-        let ((ce, _, _), _) ← liftP ((compileExpr { schema := s, scopes := tableScope t :: sc } e fuel0).run {})
+        let ((ce, _, _), _) ← liftC ((compileExpr { schema := s, scopes := tableScope t :: sc } e fuel0).run {})
         ces := ces.push ce
-        names := names.push (alias.getD (match e with | .col _ n _ => ((t.colIndex? n).map fun k => (t.cols.getD k default).name).getD n | _ => span))
+        names := names.push (alias.getD (match e with | .col _ n _ _ => ((t.colIndex? n).map fun k => (t.cols.getD k default).name).getD n | _ => span))
     modify fun db => { db with returned := some #[] }
     let _ ← exec1 st fuel
     let rows ← modifyGet fun db => (db.returned.getD #[], { db with returned := none })
@@ -1393,7 +1400,7 @@ end
 def openBytes (path : Option String) (bytes : ByteArray) : Except Err DB := do
   let p ← match Pager.ofFile bytes with
     | .ok p => pure p
-    | .error e => .error ⟨.runtime, e⟩
+    | .error e => .error ⟨.runtime, e, none⟩
   let sch ← schemaOf p
   let roots := sch.tables.map (·.root) ++ sch.indexes.map (·.root)
   return { pager := p.loadRoots roots, schema := sch, path }
@@ -1403,13 +1410,13 @@ transaction, the statement is a transaction of its own). Returns whether the fil
 def runStmt (db : DB) (s : Stmt) : DB × Except Err Result × Bool :=
   match s with
   | .begin =>
-    if db.inTxn then (db, .error ⟨.runtime, "cannot start a transaction within a transaction"⟩, false)
+    if db.inTxn then (db, .error ⟨.runtime, "cannot start a transaction within a transaction", none⟩, false)
     else ({ db with inTxn := true, pager := db.pager.beginTxn }, .ok {}, false)
   | .commit =>
-    if !db.inTxn then (db, .error ⟨.runtime, "cannot commit - no transaction is active"⟩, false)
+    if !db.inTxn then (db, .error ⟨.runtime, "cannot commit - no transaction is active", none⟩, false)
     else ({ db with inTxn := false, pager := db.pager.endTxn, savepoints := [] }, .ok {}, true)
   | .rollback =>
-    if !db.inTxn then (db, .error ⟨.runtime, "cannot rollback - no transaction is active"⟩, false)
+    if !db.inTxn then (db, .error ⟨.runtime, "cannot rollback - no transaction is active", none⟩, false)
     else
       let p := db.pager.rollbackTxn
       match schemaOf p with
@@ -1422,11 +1429,11 @@ def runStmt (db : DB) (s : Stmt) : DB × Except Err Result × Bool :=
     ({ db with savepoints := (n, db.pager, db.schema, began) :: db.savepoints }, .ok {}, false)
   | .rollbackTo n =>
     match db.savepoints.dropWhile (!nameEq ·.1 n) with
-    | [] => (db, .error ⟨.runtime, s!"no such savepoint: {n}"⟩, false)
+    | [] => (db, .error ⟨.runtime, s!"no such savepoint: {n}", none⟩, false)
     | sp@(_, p, sch, _) :: rest => ({ db with pager := p, schema := sch, savepoints := sp :: rest }, .ok {}, false)
   | .release n =>
     match db.savepoints.dropWhile (!nameEq ·.1 n) with
-    | [] => (db, .error ⟨.runtime, s!"no such savepoint: {n}"⟩, false)
+    | [] => (db, .error ⟨.runtime, s!"no such savepoint: {n}", none⟩, false)
     | (_, _, _, began) :: rest =>
       if began && rest.isEmpty then ({ db with inTxn := false, pager := db.pager.endTxn, savepoints := [] }, .ok {}, true)
       else ({ db with savepoints := rest }, .ok {}, false)

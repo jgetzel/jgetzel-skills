@@ -53,10 +53,25 @@ structure CState where
   /-- the deepest outer frame referred to since the last reset -/
   outer : Nat := 0
 
-abbrev CM := StateT CState (Except String)
+/-- A compile error: sqlite3's message, and the offset in the statement's text it points at when it has one. -/
+structure CErr where
+  msg : String
+  pos : Option Nat := none
+
+/-- A compile error with no offset. -/
+def throwC {α : Type} {m : Type → Type} [MonadExcept CErr m] (msg : String) : m α := throw { msg }
+
+abbrev CM := StateT CState (Except CErr)
+
+def throwAt {α : Type} (pos : Option Nat) (msg : String) : CM α := throw { msg, pos }
 
 /-- A compiled expression's affinity and collation (`true`: written with COLLATE). -/
 abbrev Typed := CExpr × Aff × Option (Collation × Bool)
+
+/-- The aggregate functions. -/
+def aggNames : List String :=
+  ["COUNT", "SUM", "TOTAL", "AVG", "MIN", "MAX", "GROUP_CONCAT", "STRING_AGG", "JSON_GROUP_ARRAY", "JSON_GROUP_OBJECT", "MEDIAN",
+   "PERCENTILE", "PERCENTILE_CONT", "PERCENTILE_DISC"]
 
 def isAggName (n : String) (nargs : Nat) (star : Bool) : Bool :=
   match n with
@@ -130,7 +145,7 @@ def ordinalName (n : Nat) : String :=
   | 1 => "1st" | 2 => "2nd" | 3 => "3rd" | n => s!"{n}th"
 
 /-- Column `(tbl.)name` in one scope: its slot, affinity and collation. -/
-def resolveIn (sc : Scope) (tbl : Option String) (name : String) : Except String (Option (Nat × Aff × Collation)) := do
+def resolveIn (sc : Scope) (tbl : Option String) (name : String) (pos : Option Nat := none) : Except CErr (Option (Nat × Aff × Collation)) := do
   let mut found : Option (Nat × Aff × Collation) := none
   let mut count := 0
   for s in sc.srcs do
@@ -146,17 +161,17 @@ def resolveIn (sc : Scope) (tbl : Option String) (name : String) : Except String
         if let some r := s.rowid then
           if found.isNone then found := some (r, .integer, .binary)
           count := count + 1
-  if count > 1 && tbl.isNone then throw s!"ambiguous column name: {name}"
+  if count > 1 && tbl.isNone then throw { msg := s!"ambiguous column name: {name}", pos : CErr }
   return found
 
-def resolve (scopes : List Scope) (tbl : Option String) (name : String) (depth : Nat := 0) :
-    Except String (Option (Nat × Nat × Aff × Collation)) :=
+def resolve (scopes : List Scope) (tbl : Option String) (name : String) (pos : Option Nat := none) (depth : Nat := 0) :
+    Except CErr (Option (Nat × Nat × Aff × Collation)) :=
   match scopes with
   | [] => .ok none
   | sc :: rest => do
-    match ← resolveIn sc tbl name with
+    match ← resolveIn sc tbl name pos with
     | some (s, a, c) => return some (depth, s, a, c)
-    | none => resolve rest tbl name (depth + 1)
+    | none => resolve rest tbl name pos (depth + 1)
 
 /-- The depth-0 slots an expression reads, and whether it holds a correlated subquery. -/
 def slotsOf : CExpr → Nat → Array Nat × Bool
@@ -316,7 +331,7 @@ def dirOf (t : OrderTerm) (names : Array String) (colls : Array (Option (Collati
       | .collate _ c => (Collation.ofName? c).getD .binary
       | e => match e with
         | .lit (.int k) => ((colls.getD (k.toNatClampNeg - 1) none).map (·.1)).getD .binary
-        | .col _ n _ => match names.findIdx? (nameEq · n) with
+        | .col _ n _ _ => match names.findIdx? (nameEq · n) with
           | some k => ((colls.getD k none).map (·.1)).getD .binary
           | none => .binary
         | _ => .binary
@@ -328,7 +343,7 @@ def opName : CompoundOp → String
 def orderTermColumn (e : Expr) (names : Array String) : Option Nat :=
   match stripCollate e with
   | .lit (.int k) => if k ≥ 1 && k.toNatClampNeg ≤ names.size then some (k.toNatClampNeg - 1) else none
-  | .col _ n _ => names.findIdx? (nameEq · n)
+  | .col _ n _ _ => names.findIdx? (nameEq · n)
   | _ => none
 def orderTermColl (e : Expr) : Option Collation :=
   match e with
@@ -337,7 +352,7 @@ def orderTermColl (e : Expr) : Option Collation :=
 /-- a simple SELECT's ORDER BY term that is a plain column: its declared collation -/
 def exprColl (env : CEnv) (core : Core) (e : Expr) : Option Collation :=
   match core, e with
-  | .select _ _ (some (.table tn _)) [] _ _ _, .col _ n _ =>
+  | .select _ _ (some (.table tn _)) [] _ _ _, .col _ n _ _ =>
     (env.schema.table? tn).bind fun t => t.colIndex? n |>.map fun i => (t.cols.getD i default).coll
   | _, _ => none
 /-- a plain column's result name: its declared name -/
@@ -358,6 +373,15 @@ def winDir (o : OrderTerm) (t : Typed) : Bool × Bool × Collation :=
     (desc, nf.getD (!desc), match e with
       | .collate _ c => (Collation.ofName? c).getD .binary
       | _ => (t.2.2.map fun (k : Collation × Bool) => k.1).getD .binary)
+
+/-- The number of arguments a window-only function takes (at least, at most). -/
+def winArity (n : String) : Option (Nat × Nat) :=
+  match n with
+  | "ROW_NUMBER" | "RANK" | "DENSE_RANK" | "PERCENT_RANK" | "CUME_DIST" => some (0, 0)
+  | "NTILE" | "FIRST_VALUE" | "LAST_VALUE" => some (1, 1)
+  | "LAG" | "LEAD" => some (1, 3)
+  | "NTH_VALUE" => some (2, 2)
+  | _ => none
 
 def winNames : List String := ["ROW_NUMBER", "RANK", "DENSE_RANK", "PERCENT_RANK", "CUME_DIST", "NTILE", "LAG", "LEAD",
   "FIRST_VALUE", "LAST_VALUE", "NTH_VALUE", "COUNT", "SUM", "TOTAL", "AVG", "MIN", "MAX", "GROUP_CONCAT", "STRING_AGG",
@@ -495,11 +519,11 @@ def oneRow : CSel → CSel
 
 mutual
 def compileExpr (env : CEnv) : Expr → Nat → CM Typed
-  | _, 0 => throw "expression nested too deeply"
+  | _, 0 => throwC "expression nested too deeply"
   | e, fuel+1 => match e with
   | .lit v => return (.lit v, .none, none)
-  | .col tbl name _ => do
-    match ← liftM (resolve env.scopes tbl name) with
+  | .col tbl name _ pos => do
+    match ← liftM (resolve env.scopes tbl name pos) with
     | some (d, s, a, c) =>
       modify fun st => { st with outer := max st.outer d }
       let isJsonValue := ((env.scopes.drop d).head?.map fun sc => sc.srcs.any fun si => si.jsonEach && si.base + 1 == s).getD false
@@ -508,36 +532,38 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     | none =>
       match tbl, env.aliases.find? (nameEq ·.1 name) with
       | none, some (_, e) => compileExpr { env with aliases := [] } e fuel
-      | _, _ => throw (match tbl with | some t => s!"no such column: {t}.{name}" | none => s!"no such column: {name}")
+      | _, _ => throwAt pos (match tbl with | some t => s!"no such column: {t}.{name}" | none => s!"no such column: {name}")
   | .bin op (.row as) (.row bs) => do
-    if as.length != bs.length then throw "row value misused"
-    if !([BinOp.eq, .ne, .lt, .le, .gt, .ge, .is, .isNot].contains op) then throw "row value misused"
+    if as.length != bs.length then throwC "row value misused"
+    if !([BinOp.eq, .ne, .lt, .le, .gt, .ge, .is, .isNot].contains op) then throwC "row value misused"
     compileExpr env (rowCmp op as bs (as.length + 1)) fuel
-  | .bin _ (.row _) _ | .bin _ _ (.row _) => throw "row value misused"
-  | .row _ => throw "row value misused"
+  | .bin _ (.row _) _ | .bin _ _ (.row _) => throwC "row value misused"
+  | .row _ => throwC "row value misused"
   | .between (.row es) (.row lo) (.row hi) neg => do
-    if es.length != lo.length || es.length != hi.length then throw "row value misused"
+    if es.length != lo.length || es.length != hi.length then throwC "row value misused"
     let r := Expr.bin .and (rowCmp .ge es lo (es.length + 1)) (rowCmp .le es hi (es.length + 1))
     compileExpr env (if neg then .un .not r else r) fuel
   | .inList (.row es) items neg => do
     let eqs ← items.mapM fun it => match it with
-      | .row xs => if xs.length == es.length then pure (rowCmp .eq es xs (es.length + 1)) else throw "row value misused"
-      | _ => throw "row value misused"
+      | .row xs => if xs.length == es.length then pure (rowCmp .eq es xs (es.length + 1)) else throwC "row value misused"
+      | _ => throwC "row value misused"
     let any := eqs.foldr (fun e acc => Expr.bin .or e acc) (.lit (.int 0))
     compileExpr env (if neg then .un .not any else any) fuel
   | .inSelect (.row es) q neg => do
     let ces ← compileList env es fuel
     let (cq, _, affs, colls, _) ← compileSub env q false fuel
-    if cq.ncols != ces.size then throw s!"sub-select returns {cq.ncols} columns - expected {ces.size}"
+    if cq.ncols != ces.size then throwC s!"sub-select returns {cq.ncols} columns - expected {ces.size}"
     let aff := ces.mapIdx fun i (t : Typed) => cmpAff t.2.1 (affs.getD i .none)
     let coll := ces.mapIdx fun i (t : Typed) => cmpColl t.2.2 (colls.getD i none)
     return (.inSelRow (ces.map fun (t : Typed) => t.1) cq neg aff coll, .none, none)
   | .raise k m => return (.raise k m, .none, none)
-  | .window name distinct star args filter (.mk partition orderBy frame) => do
+  | .window name distinct star args filter (.mk partition orderBy frame) pos => do
     let n := upperAscii name
     let st ← get
-    unless st.allowWin do throw s!"misuse of window function {name}()"
-    unless winNames.contains n do throw s!"{name}() may not be used as a window function"
+    unless st.allowWin do throwAt pos s!"misuse of window function {name}()"
+    unless winNames.contains n do throwC s!"{name}() may not be used as a window function"
+    if let some (lo, hi) := winArity n then
+      if args.length < lo || args.length > hi || star then throwAt pos s!"wrong number of arguments to function {name}()"
     -- the arguments are ordinary expressions (aggregates allowed in an aggregate query), not windows
     set { st with allowWin := false }
     let cargs ← compileList env args fuel
@@ -578,15 +604,16 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     | .pos => return (ca, .none, ka)
     | .not => return (.not ca, .none, none)
     | .bitNot => return (.bitNot ca, .none, none)
-  | .fn name distinct star args0 => do
+  | .fn name distinct star args0 pos => do
     let n := upperAscii name
     -- an aggregate's FILTER clause rides as the last argument
     let (args, flt) := match args0.getLast? with
-      | some (.fn t _ _ [f]) => if t == filterTag then (args0.dropLast, some f) else (args0, none)
+      | some (.fn t _ _ [f] _) => if t == filterTag then (args0.dropLast, some f) else (args0, none)
       | _ => (args0, none)
     if isAggName n args.length star && (n != "MIN" && n != "MAX" || args.length == 1) then
       let st ← get
-      unless st.allowAgg do throw s!"misuse of aggregate function {name}()"
+      unless st.allowAgg do throwAt pos s!"misuse of aggregate function {name}()"
+      if distinct && args.length != 1 then throwC "DISTINCT aggregates must have exactly one argument"
       set { st with allowAgg := false }
       let cargs ← compileList env args fuel
       let cflt ← match flt with
@@ -597,15 +624,23 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
       let coll := ((cargs[0]?).bind (·.2.2) |>.map (·.1)).getD .binary
       set { st with aggs := st.aggs.push (.mk n distinct star (cargs.map fun (t : Typed) => t.1) coll cflt) }
       return (.agg st.aggs.size, .none, none)
-    else if flt.isSome then throw s!"FILTER may not be used with non-aggregate {name}()"
+    else if flt.isSome then throwC s!"FILTER may not be used with non-aggregate {name}()"
     else
+      -- the arguments resolve first: a column that does not exist is the error before a function that does not
+      let cargs ← compileList env args fuel
       match scalarArity n with
-      | none => throw s!"no such function: {name}"
+      | none =>
+        -- an aggregate or window function called with arguments it does not take, or outside its clause
+        if aggNames.contains n then throwAt pos s!"wrong number of arguments to function {name}()"
+        else match winArity n with
+          | some (lo, hi) =>
+            if args.length < lo || args.length > hi || star then throwAt pos s!"wrong number of arguments to function {name}()"
+            else throwAt pos s!"misuse of window function {name}()"
+          | none => throwAt pos s!"no such function: {name}"
       | some (lo, hi) =>
         if args.length < lo || (match hi with | some h => args.length > h | none => false) || star then
-          throw s!"wrong number of arguments to function {name}()"
-        if distinct then throw s!"DISTINCT aggregates must have exactly one argument"
-        let cargs ← compileList env args fuel
+          throwAt pos s!"wrong number of arguments to function {name}()"
+        if distinct then throwC s!"DISTINCT aggregates must have exactly one argument"
         -- random() and randomblob(): the call site, so two calls in one row differ
         let cargs ← if n == "RANDOM" || n == "RANDOMBLOB" then do
             let st ← get
@@ -622,7 +657,7 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     let (ce, a, _) ← compileExpr env e fuel
     match Collation.ofName? c with
     | some coll => return (ce, a, some (coll, true))
-    | none => throw s!"no such collation sequence: {c}"
+    | none => throwC s!"no such collation sequence: {c}"
   | .case (some b) whens els =>
     -- CASE b WHEN w ...: each WHEN compares b = w (with w's collation when it has one)
     compileExpr env (.case none (whens.map fun (w, t) => (.bin .eq b w, t)) els) fuel
@@ -653,7 +688,7 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
   | .inSelect e q neg => do
     let (ce, ae, ke) ← compileExpr env e fuel
     let (cq, _, affs, _, corr) ← compileSub env q false fuel
-    if cq.ncols != 1 then throw s!"sub-select returns {cq.ncols} columns - expected 1"
+    if cq.ncols != 1 then throwC s!"sub-select returns {cq.ncols} columns - expected 1"
     return (.inSel ce cq neg (cmpAff ae (affs.getD 0 .none)) (cmpColl ke none) corr, .none, none)
   | .matches op e p esc neg => do
     let (ce, _, _) ← compileExpr env e fuel
@@ -661,7 +696,7 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     let cesc ← match esc with
       | some x => do let r ← compileExpr env x fuel; pure (some r.1)
       | none => pure none
-    if op == .regexp || op == .match then throw s!"no such function: {if op == .regexp then "REGEXP" else "MATCH"}"
+    if op == .regexp || op == .match then throwC s!"no such function: {if op == .regexp then "REGEXP" else "MATCH"}"
     return (.matchE op ce cp cesc neg, .none, none)
   | .isNull e neg => do
     let (ce, _, _) ← compileExpr env e fuel
@@ -671,12 +706,13 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     return (.exists (oneRow cq) neg corr, .none, none)
   | .subquery q => do
     let (cq, _, affs, colls, corr) ← compileSub env q false fuel
+    if cq.ncols != 1 then throwC s!"sub-select returns {cq.ncols} columns - expected 1"
     return (.scalar (oneRow cq) corr, affs.getD 0 .none, (colls.getD 0 none))
-  | .param t => throw s!"lean-sqlite: parameters are not supported: {t}"
+  | .param t => throwC s!"lean-sqlite: parameters are not supported: {t}"
 
 def compileList (env : CEnv) : List Expr → Nat → CM (Array Typed)
   | [], _ => return #[]
-  | _, 0 => throw "expression nested too deeply"
+  | _, 0 => throwC "expression nested too deeply"
   | e :: rest, fuel+1 => do
     let c ← compileExpr env e fuel
     let cs ← compileList env rest fuel
@@ -684,7 +720,7 @@ def compileList (env : CEnv) : List Expr → Nat → CM (Array Typed)
 
 def compilePairs (env : CEnv) : List (Expr × Expr) → Nat → CM (Array (CExpr × CExpr))
   | [], _ => return #[]
-  | _, 0 => throw "expression nested too deeply"
+  | _, 0 => throwC "expression nested too deeply"
   | (a, b) :: rest, fuel+1 => do
     let (ca, _, _) ← compileExpr env a fuel
     let (cb, _, _) ← compileExpr env b fuel
@@ -694,7 +730,7 @@ def compilePairs (env : CEnv) : List (Expr × Expr) → Nat → CM (Array (CExpr
 /-- A subquery: compiled with its own aggregates, and whether it reads the enclosing rows. `inFrom`: a FROM item of the
 enclosing SELECT, whose own scope its `env` lacks (so its depth `d` is the enclosing SELECT's depth `d`, not `d - 1`). -/
 def compileSub (env : CEnv) (q : Select) (inFrom : Bool) : Nat → CM (CSel × Array String × Array Aff × Array (Option (Collation × Bool)) × Bool)
-  | 0 => throw "expression nested too deeply"
+  | 0 => throwC "expression nested too deeply"
   | fuel+1 => do
     let st ← get
     set { st with aggs := #[], allowAgg := false, wins := #[], allowWin := false, outer := 0 }
@@ -706,7 +742,7 @@ def compileSub (env : CEnv) (q : Select) (inFrom : Bool) : Nat → CM (CSel × A
 
 /-- A SELECT: its WITH tables, cores, ORDER BY and LIMIT; also its column names, affinities and collations. -/
 def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × Array Aff × Array (Option (Collation × Bool)))
-  | _, 0 => throw "query nested too deeply"
+  | _, 0 => throwC "query nested too deeply"
   | .mk recursive ctes first rest orderBy limit offset, fuel+1 => do
     -- WITH tables, each visible to the later ones (and a recursive one to itself)
     let (env, cctes) ← compileCtes env recursive ctes fuel
@@ -717,7 +753,7 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
     for (op, core) in rest do
       let (c, ns, _, _) ← compileCore env core none fuel
       if ns.size != names.size then
-        throw s!"SELECTs to the left and right of {opName op} do not have the same number of result columns"
+        throwC s!"SELECTs to the left and right of {opName op} do not have the same number of result columns"
       cores := cores.push c
       ops := ops.push op
     -- a compound's ORDER BY names result columns
@@ -728,7 +764,7 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
         i := i + 1
         let k ← match orderTermColumn e names with
           | some k => pure k
-          | none => throw s!"{ordinalName i} ORDER BY term does not match any column in the result set"
+          | none => throwC s!"{ordinalName i} ORDER BY term does not match any column in the result set"
         ks := ks.push k
       cores := cores.map fun c => match c with
         | .select srcs pre f g gc h cols rc _ aggs isAgg d w ws => .select srcs pre f g gc h cols rc (ks.map (cols.getD · default)) aggs isAgg d w ws
@@ -769,7 +805,7 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
 
 def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv × Array CCte)
   | [], _ => return (env, #[])
-  | _, 0 => throw "query nested too deeply"
+  | _, 0 => throwC "query nested too deeply"
   | .mk name cols q materialized :: rest, fuel+1 => do
     let st ← get
     let id := st.nextCte
@@ -785,13 +821,13 @@ def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv 
         let ns := if cols.isEmpty then ns else cols.toArray
         let info : CteInfo := { name, id, cols := ns, affs := affs.map fun _ => .none }
         let env2 := { env with ctes := { info with queue := true } :: env.ctes }
-        if rest2.length != 1 then throw s!"lean-sqlite: recursive table {name} must be one SELECT UNION [ALL] one SELECT"
+        if rest2.length != 1 then throwC s!"lean-sqlite: recursive table {name} must be one SELECT UNION [ALL] one SELECT"
         let (cq, _, _, _) ← compileSelect env2 q fuel
         pure (cq, info)
       else do
         let (cq, ns, affs, _) ← compileSelect env q fuel
         if !cols.isEmpty && cols.length != ns.size then
-          throw s!"table {name} has {ns.size} values for {cols.length} columns"
+          throwC s!"table {name} has {ns.size} values for {cols.length} columns"
         let ns := if cols.isEmpty then ns else cols.toArray
         pure (cq, { name, id, cols := ns, affs : CteInfo })
     let env := { env with ctes := info :: env.ctes }
@@ -801,14 +837,14 @@ def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv 
 /-- One core: FROM, WHERE, GROUP BY, HAVING and the result columns (and, for a simple SELECT, ORDER BY). -/
 def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     Nat → CM (CCore × Array String × Array Aff × Array (Option (Collation × Bool)))
-  | 0 => throw "query nested too deeply"
+  | 0 => throwC "query nested too deeply"
   | fuel+1 => match core with
   | .values rows => do
     let mut crows := #[]
     let mut affs := #[]
     for r in rows do
       let cr ← compileList env r fuel
-      if !crows.isEmpty && cr.size != (crows.getD 0 #[]).size then throw "all VALUES must have the same number of terms"
+      if !crows.isEmpty && cr.size != (crows.getD 0 #[]).size then throwC "all VALUES must have the same number of terms"
       crows := crows.push (cr.map fun (t : Typed) => t.1)
       if affs.isEmpty then affs := cr.map fun _ => Aff.none
     let n := (crows.getD 0 #[]).size
@@ -816,7 +852,7 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     let order ← match orderBy with
       | some terms => terms.toArray.mapM fun (.mk e _ _) => match orderTermColumn e names with
         | some k => pure k
-        | none => throw "1st ORDER BY term does not match any column in the result set"
+        | none => throwC "1st ORDER BY term does not match any column in the result set"
       | none => pure #[]
     return (.values crows order, names, affs, names.map fun _ => none)
   | .select distinct cols fromItem joins whereE groupBy having => do
@@ -837,7 +873,7 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     for rc in cols do
       match rc with
       | .star =>
-        if infos.isEmpty then throw "no tables specified"
+        if infos.isEmpty then throwC "no tables specified"
         for s in infos do
           for i in [0:s.cols.size] do
             unless s.hidden.getD i false do
@@ -845,7 +881,7 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
               affs := affs.push (s.affs.getD i .none); colls := colls.push (some (s.colls.getD i .binary, false))
       | .tableStar t =>
         match infos.find? (nameEq ·.name t) with
-        | none => throw s!"no such table: {t}"
+        | none => throwC s!"no such table: {t}"
         | some s =>
           for i in [0:s.cols.size] do
             ccols := ccols.push (.col 0 (s.base + i)); names := names.push (s.cols.getD i "")
@@ -856,7 +892,7 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
         names := names.push (match alias with
           | some n => n
           | none => match e with
-            | .col tbl n _ => colName infos tbl n
+            | .col tbl n _ _ => colName infos tbl n
             | _ => span)
     -- WHERE (no aggregates, no windows), ON
     modify fun st => { st with allowAgg := false, allowWin := false }
@@ -869,11 +905,12 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     for g in groupBy do
       match g with
       | .lit (.int k) =>
-        if k < 1 || k.toNatClampNeg > ccols.size then throw s!"{ordinalName cgroup.size.succ} GROUP BY term out of range - should be between 1 and {ccols.size}"
+        if k < 1 || k.toNatClampNeg > ccols.size then throwC s!"{ordinalName cgroup.size.succ} GROUP BY term out of range - should be between 1 and {ccols.size}"
         cgroup := cgroup.push (ccols.getD (k.toNatClampNeg - 1) default)
         gcolls := gcolls.push (((colls.getD (k.toNatClampNeg - 1) none).map (·.1)).getD .binary)
       | _ =>
-        let (c, _, k) ← compileExpr env' g fuel
+        let (c, _, k) ← try compileExpr env' g fuel catch e =>
+          if e.msg.startsWith "misuse of aggregate function" then throwC "aggregate functions are not allowed in the GROUP BY clause" else throw e
         cgroup := cgroup.push c
         gcolls := gcolls.push ((k.map (·.1)).getD .binary)
     modify fun st => { st with allowAgg := true }
@@ -893,9 +930,9 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
           match e0 with
           | .lit (.int k) =>
             if k < 1 || k.toNatClampNeg > ccols.size then
-              throw s!"{ordinalName i} ORDER BY term out of range - should be between 1 and {ccols.size}"
+              throwC s!"{ordinalName i} ORDER BY term out of range - should be between 1 and {ccols.size}"
             out := out.push (ccols.getD (k.toNatClampNeg - 1) default)
-          | .col none n _ =>
+          | .col none n _ _ =>
             match cols.findIdx? (fun | .expr _ (some a) _ => nameEq a n | _ => false) with
             | some j => out := out.push (ccols.getD j default)
             | none => let (c, _, _) ← compileExpr env' e0 fuel; out := out.push c
@@ -905,12 +942,12 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     let aggs := st.aggs
     let wins := st.wins
     set { st with aggs := #[], allowAgg := false, wins := #[], allowWin := false }
-    if !aggs.isEmpty && infos.isEmpty && false then throw ""
+    if !aggs.isEmpty && infos.isEmpty && false then throwC ""
     let isAgg := !aggs.isEmpty || !cgroup.isEmpty
-    if chaving.isSome && !isAgg then throw "a GROUP BY clause is required before HAVING"
+    if chaving.isSome && !isAgg then throwC "a GROUP BY clause is required before HAVING"
     -- where each condition is checked, and how each table is read
     let bases := infos.map (·.base)
-    if (srcs.filter isRightOuter).size > 1 then throw "lean-sqlite: only one RIGHT or FULL JOIN per SELECT is supported"
+    if (srcs.filter isRightOuter).size > 1 then throwC "lean-sqlite: only one RIGHT or FULL JOIN per SELECT is supported"
     let allConds := whereConds.map (fun (t : Typed) => t.1) ++ onConds.filterMap fun (j, c) =>
       if isOuter (srcs.getD j default) then none else some c
     let leftOn : Array (Array CExpr) := (List.range srcs.size).toArray.map fun j =>
@@ -958,7 +995,7 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
 def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List String) → Nat →
     CM (Array CSource × Array SrcInfo × Array (Nat × CExpr) × Nat)
   | [], _ => return (#[], #[], #[], 0)
-  | _, 0 => throw "query nested too deeply"
+  | _, 0 => throwC "query nested too deeply"
   | items, fuel+1 => do
     let mut srcs : Array CSource := #[]
     let mut infos : Array SrcInfo := #[]
@@ -983,7 +1020,8 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           | none =>
           match env.schema.view? qname with
           | some v =>
-            let (cq, ns, affs, colls, _) ← compileSub { env with scopes := [] } v.q false fuel
+            -- the view's own text, not the statement's: its errors point nowhere in it
+            let (cq, ns, affs, colls, _) ← try compileSub { env with scopes := [] } v.q false fuel catch e => throw { e with pos := none }
             let ns := if v.cols.isEmpty then ns else v.cols.toArray
             pure (CSource.sub cq ns.size slot left right #[] #[],
               { name := an, cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
@@ -994,7 +1032,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
               some { schemaTable with name := "sqlite_temp_schema", root := tempRoot }
             else env.schema.table? qname
           match tbl with
-          | none => throw s!"no such table: {name}"
+          | none => throwC s!"no such table: {name}"
           | some t =>
             let n := t.cols.size
             pure (CSource.table t.root n t.ipk (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) slot .full
@@ -1007,7 +1045,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           if n.startsWith "pragma_" then
             -- a schema pragma's rows, read for each row of the earlier items (the argument may name their columns)
             match schemaPragma env.schema (n.drop 7).toString "" with
-            | none => throw s!"no such table-valued function: {fname}"
+            | none => throwC s!"no such table-valued function: {fname}"
             | some (ns, _) =>
               let env' := { env with scopes := { srcs := infos } :: env.scopes }
               let cargs ← compileList env' args fuel
@@ -1018,12 +1056,12 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
             -- read per row of the earlier items: the arguments may name their columns
             let env' := { env with scopes := { srcs := infos } :: env.scopes }
             let cargs ← compileList env' args fuel
-            if cargs.isEmpty || cargs.size > 2 then throw s!"wrong number of arguments to function {fname}()"
+            if cargs.isEmpty || cargs.size > 2 then throwC s!"wrong number of arguments to function {fname}()"
             let ns := #["key", "value", "type", "atom", "id", "parent", "fullkey", "path"]
             pure (CSource.tvf n (cargs.map (·.1)) ns.size slot left right #[],
               { name := alias.getD fname, cols := ns, affs := ns.map fun _ => .none, colls := ns.map fun _ => .binary,
                 base := slot, rowid := none, hidden := ns.map fun _ => false, jsonEach := true : SrcInfo })
-          else throw s!"no such table-valued function: {fname}"
+          else throwC s!"no such table-valued function: {fname}"
         | .subquery q alias =>
           let (cq, ns, affs, colls, _) ← compileSub env q true fuel
           pure (CSource.sub cq ns.size slot left right #[] #[],
@@ -1037,10 +1075,10 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           info.cols.toList.filter fun c => infos.any fun s => s.cols.toList.zipIdx.any fun (n, i) => nameEq n c && !(s.hidden.getD i false)
         else usingCols
       for u in usingCols do
-        let some ri := info.cols.findIdx? (nameEq · u) | throw s!"cannot join using column {u} - column not present in both tables"
+        let some ri := info.cols.findIdx? (nameEq · u) | throwC s!"cannot join using column {u} - column not present in both tables"
         let some (li, l) := (infos.toList.zipIdx.findSome? fun (s, _) =>
             (s.cols.findIdx? (nameEq · u)).bind fun ci => if s.hidden.getD ci false then none else some (s.base + ci, s))
-          | throw s!"cannot join using column {u} - column not present in both tables"
+          | throwC s!"cannot join using column {u} - column not present in both tables"
         ons := ons.push (j, .cmp .eq (.col 0 li) (.col 0 (info.base + ri)) (cmpAff (l.affs.getD 0 .none) .none) (l.colls.getD 0 .binary))
         info := { info with hidden := info.hidden.setIfInBounds ri true }
       infos := infos.push info

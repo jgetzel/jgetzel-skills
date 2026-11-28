@@ -81,6 +81,13 @@ def errorContext (sql : String) (off : Nat) : String :=
   if col < 25 then s!"\n  {shown}\n  {pad col}^--- error here"
   else s!"\n  {shown}\n  {pad (col - 14)}error here ---^"
 
+/-- The error context of an error at byte `off` of `sql`, in the statement that starts at or after byte `pos`. -/
+def statementContext (sql : String) (pos off : Nat) : String :=
+  let first := (List.range (sql.utf8ByteSize - pos)).foldl (fun i _ =>
+    if i < sql.utf8ByteSize && (Lex.byteAt sql i == 32 || (Lex.byteAt sql i ≥ 9 && Lex.byteAt sql i ≤ 13)) then i + 1 else i) pos
+  let rest := String.fromUTF8? ⟨(sql.toUTF8.extract first sql.utf8ByteSize).data⟩
+  errorContext (rest.getD "") (off - first)
+
 /-- Runs the statements of `sql` (which starts on line `line`); an error stops the rest of it. -/
 def runSql (out err : IO.FS.Stream) (st : St) (sql : String) (line : Nat) : IO St := do
   let mut st := st
@@ -88,10 +95,7 @@ def runSql (out err : IO.FS.Stream) (st : St) (sql : String) (line : Nat) : IO S
   for _ in [0:sql.utf8ByteSize + 1] do
     match Parse.parseNext sql pos with
     | .error e =>
-      let first := (List.range (sql.utf8ByteSize - pos)).foldl (fun i _ =>
-        if i < sql.utf8ByteSize && (Lex.byteAt sql i == 32 || (Lex.byteAt sql i ≥ 9 && Lex.byteAt sql i ≤ 13)) then i + 1 else i) pos
-      let rest := String.fromUTF8? ⟨(sql.toUTF8.extract first sql.utf8ByteSize).data⟩
-      errLine out err s!"Parse error near line {line}: {e.msg}{errorContext (rest.getD "") (e.pos - first)}"
+      errLine out err s!"Parse error near line {line}: {e.msg}{statementContext sql pos e.pos}"
       return { st with failed := true }
     | .ok none => break
     | .ok (some (stmt, next)) =>
@@ -112,7 +116,7 @@ def runSql (out err : IO.FS.Stream) (st : St) (sql : String) (line : Nat) : IO S
       | .error e =>
         let stmtLine := line + lineOf sql pos
         match e.kind with
-        | .parse => errLine out err s!"Parse error near line {stmtLine}: {e.msg}"
+        | .parse => errLine out err s!"Parse error near line {stmtLine}: {e.msg}{match e.pos with | some p => statementContext sql pos p | none => ""}"
         | .runtime => errLine out err s!"Error near line {stmtLine}: {e.msg}"
         return { st with db, failed := true }
       | .ok res =>
