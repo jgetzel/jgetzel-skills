@@ -527,7 +527,7 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     compileExpr env (if neg then .un .not any else any) fuel
   | .inSelect (.row es) q neg => do
     let ces ← compileList env es fuel
-    let (cq, _, affs, colls, _) ← compileSub env q fuel
+    let (cq, _, affs, colls, _) ← compileSub env q false fuel
     if cq.ncols != ces.size then throw s!"sub-select returns {cq.ncols} columns - expected {ces.size}"
     let aff := ces.mapIdx fun i (t : Typed) => cmpAff t.2.1 (affs.getD i .none)
     let coll := ces.mapIdx fun i (t : Typed) => cmpColl t.2.2 (colls.getD i none)
@@ -652,7 +652,7 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     return (.inList ce (ci.map fun (t : Typed) => t.1) neg aff (cmpColl ke none), .none, none)
   | .inSelect e q neg => do
     let (ce, ae, ke) ← compileExpr env e fuel
-    let (cq, _, affs, _, corr) ← compileSub env q fuel
+    let (cq, _, affs, _, corr) ← compileSub env q false fuel
     if cq.ncols != 1 then throw s!"sub-select returns {cq.ncols} columns - expected 1"
     return (.inSel ce cq neg (cmpAff ae (affs.getD 0 .none)) (cmpColl ke none) corr, .none, none)
   | .matches op e p esc neg => do
@@ -667,10 +667,10 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     let (ce, _, _) ← compileExpr env e fuel
     return (.isNull ce neg, .none, none)
   | .exists q neg => do
-    let (cq, _, _, _, corr) ← compileSub env q fuel
+    let (cq, _, _, _, corr) ← compileSub env q false fuel
     return (.exists (oneRow cq) neg corr, .none, none)
   | .subquery q => do
-    let (cq, _, affs, colls, corr) ← compileSub env q fuel
+    let (cq, _, affs, colls, corr) ← compileSub env q false fuel
     return (.scalar (oneRow cq) corr, affs.getD 0 .none, (colls.getD 0 none))
   | .param t => throw s!"lean-sqlite: parameters are not supported: {t}"
 
@@ -691,8 +691,9 @@ def compilePairs (env : CEnv) : List (Expr × Expr) → Nat → CM (Array (CExpr
     let cs ← compilePairs env rest fuel
     return #[(ca, cb)] ++ cs
 
-/-- A subquery: compiled with its own aggregates, and whether it reads the enclosing rows. -/
-def compileSub (env : CEnv) (q : Select) : Nat → CM (CSel × Array String × Array Aff × Array (Option (Collation × Bool)) × Bool)
+/-- A subquery: compiled with its own aggregates, and whether it reads the enclosing rows. `inFrom`: a FROM item of the
+enclosing SELECT, whose own scope its `env` lacks (so its depth `d` is the enclosing SELECT's depth `d`, not `d - 1`). -/
+def compileSub (env : CEnv) (q : Select) (inFrom : Bool) : Nat → CM (CSel × Array String × Array Aff × Array (Option (Collation × Bool)) × Bool)
   | 0 => throw "expression nested too deeply"
   | fuel+1 => do
     let st ← get
@@ -700,7 +701,7 @@ def compileSub (env : CEnv) (q : Select) : Nat → CM (CSel × Array String × A
     let (cq, names, affs, colls) ← compileSelect env q fuel
     let st2 ← get
     set { st2 with aggs := st.aggs, allowAgg := st.allowAgg, wins := st.wins, allowWin := st.allowWin,
-                   outer := max st.outer (st2.outer - 1) }
+                   outer := max st.outer (st2.outer - (if inFrom then 0 else 1)) }
     return (cq, names, affs, colls, st2.outer ≥ 1)
 
 /-- A SELECT: its WITH tables, cores, ORDER BY and LIMIT; also its column names, affinities and collations. -/
@@ -982,7 +983,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           | none =>
           match env.schema.view? qname with
           | some v =>
-            let (cq, ns, affs, colls, _) ← compileSub { env with scopes := [] } v.q fuel
+            let (cq, ns, affs, colls, _) ← compileSub { env with scopes := [] } v.q false fuel
             let ns := if v.cols.isEmpty then ns else v.cols.toArray
             pure (CSource.sub cq ns.size slot left right #[] #[],
               { name := an, cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
@@ -1024,7 +1025,7 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
                 base := slot, rowid := none, hidden := ns.map fun _ => false, jsonEach := true : SrcInfo })
           else throw s!"no such table-valued function: {fname}"
         | .subquery q alias =>
-          let (cq, ns, affs, colls, _) ← compileSub { env with scopes := env.scopes } q fuel
+          let (cq, ns, affs, colls, _) ← compileSub env q true fuel
           pure (CSource.sub cq ns.size slot left right #[] #[],
             { name := alias.getD "", cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
               rowid := none, hidden := ns.map fun _ => false : SrcInfo })
