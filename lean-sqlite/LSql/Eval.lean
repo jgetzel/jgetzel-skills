@@ -86,6 +86,12 @@ def toRowid? (v : Value) : Option Int64 :=
   | .int i => some i
   | _ => none
 
+/-- A LIMIT or OFFSET value as an integer (OP_MustBeInt): what an INTEGER column keeps of it, else a datatype mismatch. -/
+def limitInt (v : Value) : EM Int64 :=
+  match toRowid? v with
+  | some i => pure i
+  | none => .error "datatype mismatch"
+
 def textArg (v : Value) : String := v.toText
 
 /-- soundex() (func.c soundexFunc): the first letter, then up to three digit codes; "?000" without a letter. -/
@@ -1785,14 +1791,13 @@ def runSel (env : Env) : CSel → Nat → EM (Array Row)
       env := { env with ctes := cs.setIfInBounds id rows }
     let lim ← match limit with
       | some e => do
-        let v ← eval env e fuel
-        let i := Num.castToInt v
+        let i ← limitInt (← eval env e fuel)
         pure (if i < 0 then none else some i.toNatClampNeg)
       | none => pure none
     -- LIMIT 0: no row is read, nothing evaluated (not even OFFSET)
     if lim == some 0 then return #[]
     let off ← match offset with
-      | some e => do let v ← eval env e fuel; pure (Num.castToInt v).toNatClampNeg
+      | some e => do let i ← limitInt (← eval env e fuel); pure i.toNatClampNeg
       | none => pure 0
     let hint := if cores.size == 1 && dirs.isEmpty then lim.map (· + off) else none
     -- one core puts its own rows in ORDER BY's order
@@ -1826,7 +1831,7 @@ def runRecursive (env : Env) (id : Nat) : CSel → Nat → EM (Array Row)
     let some recur := cores[1]? | return #[]
     let distinct := ops[0]? == some .union
     let lim ← match limit with
-      | some e => do let v ← eval env e fuel; let i := Num.castToInt v; pure (if i < 0 then none else some i.toNatClampNeg)
+      | some e => do let i ← limitInt (← eval env e fuel); pure (if i < 0 then none else some i.toNatClampNeg)
       | none => pure none
     let anchor ← hoistCore env anchor fuel
     let init := (← runCore env none none anchor none 0 fuel).map (·.1)

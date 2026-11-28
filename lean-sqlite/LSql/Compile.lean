@@ -486,6 +486,11 @@ def selectReads (q : Select) (name : String) : Bool :=
       | _ => false
     | _ => false
 
+/-- A scalar or EXISTS subquery stops at one row: its LIMIT X becomes X <> 0 (as sqlite does), so X is a boolean there. -/
+def oneRow : CSel → CSel
+  | .mk ctes cores ops dirs limit offset n =>
+    .mk ctes cores ops dirs (limit.map fun e => .cmp .ne e (.lit (.int 0)) .numeric .binary) offset n
+
 mutual
 def compileExpr (env : CEnv) : Expr → Nat → CM Typed
   | _, 0 => throw "expression nested too deeply"
@@ -661,10 +666,10 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     return (.isNull ce neg, .none, none)
   | .exists q neg => do
     let (cq, _, _, _, corr) ← compileSub env q fuel
-    return (.exists cq neg corr, .none, none)
+    return (.exists (oneRow cq) neg corr, .none, none)
   | .subquery q => do
     let (cq, _, affs, colls, corr) ← compileSub env q fuel
-    return (.scalar cq corr, affs.getD 0 .none, (colls.getD 0 none))
+    return (.scalar (oneRow cq) corr, affs.getD 0 .none, (colls.getD 0 none))
   | .param t => throw s!"lean-sqlite: parameters are not supported: {t}"
 
 def compileList (env : CEnv) : List Expr → Nat → CM (Array Typed)
