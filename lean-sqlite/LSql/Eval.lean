@@ -2062,8 +2062,8 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
         return some (← a.args.mapM (· e), #[])
       let fresh : Group dd := { accs := aggRuns.map fun _ => {}, frame := frame0 }
       -- the planner's min()/max() early-out: an aggregate core whose item is read in order stops after one joined row
-      let minMax := srcs.size == 1 && match (srcs[0]? : Option CSource) with
-        | some (.table _ _ _ _ _ _ (.ordered ..) _ _ _ _) => true
+      let minMax := srcs.any fun (s : CSource) => match s with
+        | .table _ _ _ _ _ _ (.ordered ..) _ _ _ _ => true
         | _ => false
       -- a group's result: its aggregates' values, unless HAVING rejects it
       let finish (g : Group dd) : EM (Option Env) := do
