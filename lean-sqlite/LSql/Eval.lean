@@ -504,6 +504,17 @@ def bindRest (src : CSource) (rest : Array Bool) (frame : Row) (raw : Array (Int
     fillRow frame base tn ipk rc dv rest k r
   | _, _ => frame
 
+/-- A table item's row as a joined frame read it: its rowid and record (none for the other items, and for a LEFT JOIN's
+row of NULLs). -/
+abbrev RowRef := Option (Int64 × ByteArray)
+
+/-- A sorted row's frame with its deferred columns (`late`) decoded from the table rows it was joined from. -/
+def bindLate (srcs : Array CSource) (late : Array Bool) (frame : Row) (refs : Array RowRef) : Row :=
+  srcs.size.fold (fun k _ fr => match srcs[k]?, refs[k]? with
+    | some (.table _ n ipk rc dv base _ _ _ layout _), some (some (rid, rec_)) =>
+      if layout.isEmpty then fillRow fr base n ipk rc dv late rid rec_ else fr
+    | _, _ => fr) frame
+
 /-- json_each / json_tree rows (the JSON module's). -/
 def tvfRows (tree : Bool) (json : Value) (root : Option Value) : EM (Array Row) :=
   Json.eachRows tree json root
@@ -571,6 +582,120 @@ def cmpRows (a b : Row) : Ordering := cmpRowsColl #[] a b
 
 /-- Stable sort (bottom-up merge sort). -/
 @[specialize] def sortBy (xs : Array α) (cmp : α → α → Ordering) : Array α := mergePasses cmp xs 1 64
+
+/-- Moves entry `i` of a max-heap up while its parent is smaller. -/
+@[specialize] def siftUp (cmp : α → α → Ordering) (h : Array α) (i : Nat) : Nat → Array α
+  | 0 => h
+  | f+1 =>
+    if i == 0 then h else
+    let p := (i - 1) / 2
+    if hp : p < h.size ∧ i < h.size then
+      if cmp h[p] h[i] == .lt then siftUp cmp (h.swap p i) p f else h
+    else h
+
+/-- Moves entry `i` of a max-heap down while a child is larger. -/
+@[specialize] def siftDown (cmp : α → α → Ordering) (h : Array α) (i : Nat) : Nat → Array α
+  | 0 => h
+  | f+1 =>
+    let l := 2 * i + 1
+    let r := l + 1
+    let big := if hl : l < h.size ∧ i < h.size then (if cmp h[i] h[l] == .lt then l else i) else i
+    let big := if hr : r < h.size ∧ big < h.size then (if cmp h[big] h[r] == .lt then r else big) else big
+    if hb : big ≠ i ∧ big < h.size ∧ i < h.size then siftDown cmp (h.swap i big) big f else h
+
+/-- A max-heap of at most `n` entries offered `x`: kept while there is room, else in place of the largest entry when
+smaller than it (the first `n` in order stay, as in sqlite's LIMIT sorter). -/
+@[specialize] def heapOffer (cmp : α → α → Ordering) (n : Nat) (h : Array α) (x : α) : Array α :=
+  if h.size < n then siftUp cmp (h.push x) h.size (h.size + 1)
+  else match h[0]? with
+    | some w => if cmp x w == .lt then siftDown cmp (h.setIfInBounds 0 x) 0 h.size else h
+    | none => h
+
+/-- Where ORDER BY's sorter reads a key: field `col` of FROM item `item`'s record, in place (`dflt` past the record's
+end: a column added by ALTER TABLE), or the value of the key's expression. -/
+inductive KeySrc where
+  | field (item col : Nat) (dflt : Value)
+  /-- FROM item `item`'s rowid (its INTEGER PRIMARY KEY) -/
+  | rowid (item : Nat)
+  /-- the value of the `j`th key that is neither -/
+  | expr (j : Nat)
+  deriving Inhabited
+
+/-- A kept key record `a` against a candidate row's keys, read from its items' records (`refs`) or its key values
+(`vals`), without decoding the fields. -/
+def cmpKeyCand (dirs : Array (Bool × Bool × Collation)) (srcs : Array KeySrc) (refs : Array RowRef) (vals : Array Value)
+    (a : ByteArray) : Ordering :=
+  let (ha, ka) := getVarint a 0
+  go ha.toNat ka ha.toNat 0 dirs.size
+where
+  go (ha pa oa i : Nat) : Nat → Ordering
+    | 0 => .eq
+    | f+1 =>
+      if pa ≥ ha then .eq else
+      let (ta, la) := getVarint a pa
+      let (desc, nullsFirst, coll) := dirs.getD i (false, true, .binary)
+      let value (v : Value) : Ordering :=
+        keyOrder desc nullsFirst (serialClass ta == 0) v.isNull fun _ => cmpFieldValue coll a ta oa v
+      let o := match srcs.getD i default with
+        | .field item col dflt => match refs.getD item none with
+          | some (_, r) => match recordField? r col with
+            | some (t, o) => keyOrder desc nullsFirst (serialClass ta == 0) (serialClass t == 0) fun _ => cmpField coll a ta oa r t o
+            | none => value dflt
+          | none => value .null
+        | .rowid item => value (match refs.getD item none with | some (k, _) => .int k | none => .null)
+        | .expr j => value (vals.getD j .null)
+      if o != .eq then o else go ha (pa + la) (oa + serialLen ta) (i+1) f
+
+/-- A candidate row's key `i`: a record's field (serial type and body offset), or a value. -/
+inductive KeyPart where
+  | field (r : ByteArray) (t : UInt64) (o : Nat)
+  | value (v : Value)
+
+/-- The sort record of a candidate row's keys: record fields copied as they are, key values encoded. -/
+def keyRecord (srcs : Array KeySrc) (refs : Array RowRef) (vals : Array Value) : ByteArray :=
+  let parts := srcs.mapIdx fun i s => match s with
+    | .field item col dflt => match refs.getD item none with
+      | some (_, r) => match recordField? r col with
+        | some (t, o) => KeyPart.field r t o
+        | none => .value dflt
+      | none => .value .null
+    | .rowid item => .value (match refs.getD item none with | some (k, _) => .int k | none => .null)
+    | .expr j => .value (vals.getD j .null)
+  let types := parts.map fun p => match p with
+    | .field _ t _ => (t, serialLen t)
+    | .value v => serialType v
+  parts.foldl (fun b p => match p with
+    | .field r t o => r.copySlice o b b.size (serialLen t) false
+    | .value v => pushBody b v) (recordHeader types)
+
+/-- A row in ORDER BY's sorter: its keys packed in a record, its arrival (the last key, so equal keys keep it), its
+computed result columns, and its frame with the table rows it was joined from (the deferred columns are decoded from
+them once it is output). -/
+structure SortEntry where
+  key : ByteArray
+  seq : Nat
+  vals : Row
+  frame : Row := #[]
+  refs : Array RowRef := #[]
+deriving Inhabited
+
+@[inline] def cmpEntry (dirs : Array (Bool × Bool × Collation)) (a b : SortEntry) : Ordering :=
+  match cmpSortRecords dirs a.key b.key with
+  | .eq => compare a.seq b.seq
+  | o => o
+
+/-- ORDER BY's sorter: a max-heap of the first `n` entries when bounded, else every entry. -/
+structure Sorter where
+  rows : Array SortEntry := #[]
+  seq : Nat := 0
+
+/-- Result rows in ORDER BY's order of their keys (packed into records), only the first `n` when bounded. -/
+def orderRows (dirs : Array (Bool × Bool × Collation)) (bound : Option Nat) (rows : Array (Row × Row)) : Array (Row × Row) :=
+  let es := rows.mapIdx fun i (vs, ks) => ({ key := encodeRecord ks, seq := i, vals := vs } : SortEntry)
+  let es := match bound with
+    | some n => es.foldl (heapOffer (cmpEntry dirs) n) #[]
+    | none => es
+  (sortBy es (cmpEntry dirs)).map fun e => (e.vals, #[])
 
 /-- The indexes of each row's first occurrence, in order (DISTINCT, UNION). -/
 def firstOccurrences (rows : Array Row) (colls : Array Collation := #[]) : Array Nat :=
@@ -1222,6 +1347,11 @@ structure CoreRun where
   need : Array Bool
   /-- each FROM item's columns in two stages: those its ON and WHERE conditions read, then the rest of `need` -/
   needs : Array (Array Bool × Array Bool)
+  /-- the slots only plain result columns read, of the table items read as records: a sorter decodes them only for the
+  rows it outputs -/
+  late : Array Bool
+  /-- where a sorter reads each ORDER BY key -/
+  keys : Array KeySrc
 deriving Inhabited
 
 /-- A core's expressions compiled once, for all its rows (a VALUES core has none). -/
@@ -1241,9 +1371,34 @@ def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
     let aggArgs := aggs.foldl (fun acc (.mk _ _ _ args _ f) => acc ++ args ++ f.toArray) #[]
     let winExprs := wins.foldl (fun acc (.mk _ _ _ args f part _ ord _ _ s fi _) =>
       acc ++ args ++ f.toArray ++ part ++ ord ++ boundExprs s ++ boundExprs fi) #[]
-    let needOf (fs : Array (Array CExpr)) := neededSlots width (cols ++ order ++ groupBy ++ having.toArray ++ pre ++ fs.foldl (· ++ ·) #[]
-      ++ srcExprs ++ aggArgs ++ winExprs)
+    let readers (cs os : Array CExpr) (fs : Array (Array CExpr)) := neededSlots width (cs ++ os ++ groupBy ++ having.toArray
+      ++ pre ++ fs.foldl (· ++ ·) #[] ++ srcExprs ++ aggArgs ++ winExprs)
+    let needOf (fs : Array (Array CExpr)) := readers cols order fs
     let need := needOf filters
+    -- what a sorter reads in place and decodes late (nothing to sort: none)
+    let (keys, late) : Array KeySrc × Array Bool := if order.isEmpty then (#[], #[]) else
+      -- a sorter reads a key that is a column of a table item read as records in place, from the record
+      let fieldOf (s : Nat) : Option KeySrc := (srcs.mapIdx fun i src => (i, src)).findSome? fun (i, src) => match src with
+        | .table _ n ipk _ dv base _ _ _ layout _ =>
+          if !layout.isEmpty || s < base || s > base + n then none
+          else if s == base + n || ipk == some (s - base) then some (.rowid i)
+          else some (.field i (s - base) (dv.getD (s - base) .null))
+        | _ => none
+      -- each key read in place, or numbered among the keys evaluated
+      let keys := (order.foldl (fun ((ks : Array KeySrc), j) o => match o with
+        | .col 0 s => match fieldOf s with
+          | some k => (ks.push k, j)
+          | none => (ks.push (.expr j), j + 1)
+        | _ => (ks.push (.expr j), j + 1)) (#[], 0)).1
+      let isPlain (c : CExpr) : Bool := c matches .col 0 _
+      let recSlots := srcs.foldl (fun m s => match s with
+        | .table _ n _ _ _ base _ _ _ layout _ => if layout.isEmpty then (n + 1).fold (fun k _ m => m.setIfInBounds (base + k) true) m else m
+        | _ => m) (Array.replicate width false)
+      let others := readers (cols.filter (!isPlain ·)) ((order.zip keys).filterMap fun (o, k) => if k matches .expr _ then some o else none) filters
+      let mark (m : Array Bool) (c : CExpr) : Array Bool := match c with | .col 0 s => m.setIfInBounds s true | _ => m
+      let plainRead := order.foldl mark (cols.foldl mark (Array.replicate width false))
+      let late := plainRead.mapIdx fun k b => b && recSlots.getD k false && !others.getD k false
+      (keys, late)
     -- each scan's conditions on a column against a literal, decided as its records are read
     let splits := srcs.mapIdx fun i s => litSplit fuel s (filters.getD i #[])
     let needs := srcs.mapIdx fun i s =>
@@ -1278,7 +1433,156 @@ def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
            step := aggStepOf name star coll } : AggRun)
     { pre := compileConds sub pre fuel, runs, groupBy := groupBy.map (·.compile sub fuel), aggs,
       having := having.map (·.compileTrue sub fuel), cols := cols.map (·.compile sub fuel),
-      order := order.map (·.compile sub fuel), need, needs }
+      order := order.map (·.compile sub fuel), need, needs, late, keys }
+
+/-- The rows a FROM item offers for the current frame: a table's (rowid, record) pairs through its access path, or a
+subquery's or WITH table's rows. `auto`: the item's transient index. -/
+def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) :
+    Nat → EM (Array (Int64 × ByteArray) × Array Row)
+  | 0 => .error "query nested too deeply"
+  | _+1 => do
+    if let some ai := auto then
+      let keys := src.autoKeys
+      let mut probe : Array Value := #[]
+      for (x, aff) in run.auto do
+        let v := Value.applyCmpAff aff (← x.run e)
+        if v.isNull then return (#[], #[])
+        probe := probe.push v
+      return autoSeek ai.get (keys.map (·.2.2.2)) probe
+    match src with
+    | .sub .. => .ok (#[], sub.getD #[])
+    | .cte id .. => .ok (#[], e.ctes.getD id #[])
+    | .tvf fn _ _ _ _ _ _ => do
+      let vs ← run.args.mapM (·.run e)
+      if fn.startsWith "pragma_" then
+        return (#[], ((schemaPragma e.schema (fn.drop 7).toString ((vs.getD 0 .null).toText)).map (·.2)).getD #[])
+      let rows ← tvfRows (fn == "json_tree") (vs.getD 0 .null) vs[1]?
+      return (#[], rows)
+    | .table root n _ realCols defaults _ _ _ _ layout _ => do
+      let p := e.pager
+      -- a WITHOUT ROWID table: its index-format tree's records, each field placed in its column
+      if !layout.isEmpty then
+        return (#[], BTree.foldIndex p root #[] fun acc r => acc.push (worRow n layout realCols defaults r))
+      let dec (rs : Array (Int64 × ByteArray)) : Array (Int64 × ByteArray) × Array Row := (rs, #[])
+      let find (k : Int64) : Array (Int64 × ByteArray) :=
+        match BTree.tableFind p root k with | some c => #[(k, c.payload)] | none => #[]
+      match run.access with
+      | .full => return dec (BTree.foldTable p root #[] fun acc k r => if litsPass run.lits r then acc.push (k, r) else acc)
+      | .rowidEq x => do
+        let v ← x.run e
+        return match toRowid? v with | some k => dec (find k) | none => (#[], #[])
+      | .rowidIn items => do
+        let vs ← items.mapM (·.run e)
+        let ks := sortBy (vs.filterMap toRowid?) compare
+        let ks := ks.foldl (fun acc k => if acc.back? == some k then acc else acc.push k) #[]
+        return dec (ks.foldl (fun acc k => acc ++ find k) #[])
+      | .rowidRange lo hi => do
+        let lo' ← match lo with
+          | some (x, incl) => do let v ← x.run e; pure (boundRowid v incl true)
+          | none => pure none
+        let hi' ← match hi with
+          | some (x, incl) => do let v ← x.run e; pure (boundRowid v incl false)
+          | none => pure none
+        return dec (scanRange p root lo' hi' (litsPass run.lits))
+      | .index iroot ki eqs lo hi => do
+        let mut eqv : Array Value := #[]
+        for (x, aff) in eqs do
+          let v := Value.applyCmpAff aff (← x.run e)
+          if v.isNull then return (#[], #[])
+          eqv := eqv.push v
+        let lov ← match lo with
+          | some (x, _, aff) => do
+            let v := Value.applyCmpAff aff (← x.run e)
+            pure (if v.isNull then none else some v)
+          | none => pure none
+        let hiv ← match hi with
+          | some (x, incl, aff) => do
+            let v := Value.applyCmpAff aff (← x.run e)
+            pure (if v.isNull then none else some (v, incl))
+          | none => pure none
+        let eqProbe := encodeRecord eqv
+        let probe := match lov with | some v => encodeRecord (eqv.push v) | none => eqProbe
+        -- with no lower bound, NULL entries (which sort first) are skipped by starting after them
+        let probe := if lov.isNone && hiv.isSome then encodeRecord (eqv.push (.int (-9223372036854775808)) |>.pop |>.push (Value.real (-1.0/0.0))) else probe
+        let rids := scanIndex p iroot ki probe eqProbe eqv.size hiv
+        return dec (rids.foldl (fun acc k => acc ++ find k) #[])
+      -- with no transient index passed in (a RIGHT JOIN's own pass), the whole table
+      | .auto _ => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
+
+/-- The nested-loop join from FROM item `i` on: each candidate row of the item bound into the frame, its conditions
+checked, then the later items; each joined frame goes to `emit` (with the items' `RowRef`s when `track`), until `stop`
+holds; a LEFT JOIN's item with no match binds NULLs; a RIGHT JOIN's matched rows are marked. `needs`: each item's slots
+its conditions read, and the rest it binds once they pass. -/
+@[specialize] def joinFrom (emit : σ → Env → Array RowRef → EM σ) (stop : σ → Bool) (track : Bool) (e : Env) (srcs : Array CSource)
+    (runs : Array SrcRun) (subs : Array (Option (Array Row))) (autos : Array (Option (Thunk AutoIdx)))
+    (needs : Array (Array Bool × Array Bool)) (i : Nat) (refs : Array RowRef) (acc : σ × Array Bool) :
+    Nat → EM (σ × Array Bool)
+  | 0 => .error "query nested too deeply"
+  | fuel+1 => do
+    let some src := srcs[i]? | return (← emit acc.1 e refs, acc.2)
+    let (base, n, left, right) := match src with
+      | .table _ n _ _ _ base _ left right _ _ => (base, n + 1, left, right)
+      | .sub _ n base left right _ _ => (base, n, left, right)
+      | .cte _ n base left right _ _ => (base, n, left, right)
+      | .tvf _ _ n base left right _ => (base, n, left, right)
+    let run := runs.getD i default
+    let (raw, cands) ← candidates e src run (subs.getD i none) (autos.getD i none) fuel
+    let (first, rest) := needs.getD i (#[], #[])
+    let frame := e.top
+    let mut acc := acc
+    let mut matched := false
+    -- one environment, its frame written in place row after row (copied only when a row is kept)
+    let mut e := e
+    let count := if raw.isEmpty then cands.size else raw.size
+    for j in [0:count] do
+      if stop acc.1 then break
+      e := e.modifyTop (bindCand src first · raw cands j)
+      if left || right then
+        unless ← run.on.run e do continue
+      matched := true
+      if right then acc := (acc.1, acc.2.setIfInBounds j true)
+      if ← run.resid.run e then
+        e := e.modifyTop (bindRest src rest · raw j)
+        acc ← joinFrom emit stop track e srcs runs subs autos needs (i+1) (if track then refs.push raw[j]? else refs) acc fuel
+    if left && !matched then
+      let nulls := n.fold (fun k _ (fr : Row) => fr.setIfInBounds (base + k) .null) frame
+      let en := e.modifyTop fun _ => nulls
+      if ← run.conds.run en then
+        acc ← joinFrom emit stop track en srcs runs subs autos needs (i+1) (if track then refs.push none else refs) acc fuel
+    return acc
+
+/-- A core's join into a consumer (`joinFrom` from the first item), then a RIGHT or FULL JOIN item's rows nothing
+matched, with NULLs for the items before it. `rightIdx`: that item; `env`: the enclosing query's; `need`: the slots any
+expression reads. -/
+@[specialize] def joinAll (emit : σ → Env → Array RowRef → EM σ) (stop : σ → Bool) (track : Bool) (rightIdx : Option Nat)
+    (env : Env) (frame0 : Row) (srcs : Array CSource) (runs : Array SrcRun) (subs : Array (Option (Array Row))) (autos : Array (Option (Thunk AutoIdx)))
+    (needs : Array (Array Bool × Array Bool)) (need : Array Bool) (init : σ) : Nat → EM σ
+  | 0 => .error "query nested too deeply"
+  | fuel+1 => do
+    -- a RIGHT or FULL JOIN's item: its rows are counted once, and the join marks those some earlier row matched
+    let rightCount ← match rightIdx with
+      | some r => do
+        let (raw, cs) ← candidates (env.push frame0) (srcs.getD r default) (runs.getD r default) (subs.getD r none) none fuel
+        pure (if raw.isEmpty then cs.size else raw.size)
+      | none => pure 0
+    let (acc, matched) ← if srcs.isEmpty then do pure (← emit init (env.push frame0) #[], #[])
+      else joinFrom emit stop track (env.push frame0) srcs runs subs autos needs 0 #[] (init, Array.replicate rightCount false) fuel
+    -- then its rows nothing matched, with NULLs for the items before it
+    match rightIdx with
+    | none => return acc
+    | some r =>
+      let src := srcs.getD r default
+      let (raw, cs) ← candidates (env.push frame0) src (runs.getD r default) (subs.getD r none) none fuel
+      let mut acc : σ × Array Bool := (acc, #[])
+      for j in [0:rightCount] do
+        if matched.getD j true then continue
+        let e := env.push (bindCand src need frame0 raw cs j)
+        let mut ok := true
+        for k in [0:r+1] do
+          unless ← (runs.getD k default).conds.run e do ok := false; break
+        let refs : Array RowRef := if track then (Array.replicate r none).push raw[j]? else #[]
+        if ok then acc ← joinFrom emit stop track e srcs runs subs autos needs (r+1) refs acc fuel
+      return acc.1
 
 mutual
 /-- An expression's value (compiled, then run once). -/
@@ -1354,15 +1658,19 @@ def runSel (env : Env) : CSel → Nat → EM (Array Row)
         let i := Num.castToInt v
         pure (if i < 0 then none else some i.toNatClampNeg)
       | none => pure none
+    -- LIMIT 0: no row is read, nothing evaluated (not even OFFSET)
+    if lim == some 0 then return #[]
     let off ← match offset with
       | some e => do let v ← eval env e fuel; pure (Num.castToInt v).toNatClampNeg
       | none => pure 0
     let hint := if cores.size == 1 && dirs.isEmpty then lim.map (· + off) else none
+    -- one core puts its own rows in ORDER BY's order
+    let ord := if cores.size == 1 && !dirs.isEmpty then some (dirs, lim.map (· + off)) else none
     let mut acc : Array (Row × Row) := #[]
     let mut i := 0
     for core in cores do
       let core ← hoistCore env core fuel
-      let rs ← runCore env none core (if i == 0 then hint else none) fuel
+      let rs ← runCore env none ord core (if i == 0 then hint else none) fuel
       if i == 0 then acc := rs else
         match ops[i - 1]? with
         | some .unionAll => acc := acc ++ rs
@@ -1375,7 +1683,7 @@ def runSel (env : Env) : CSel → Nat → EM (Array Row)
           acc := (sortedDistinct acc).filter fun x => !memRow r x.1
         | none => pure ()
       i := i + 1
-    let sorted := if dirs.isEmpty then acc else sortBy acc fun a b => cmpKeys dirs a.2 b.2
+    let sorted := if dirs.isEmpty || ord.isSome then acc else orderRows dirs (lim.map (· + off)) acc
     let page := sorted.extract off (match lim with | some l => off + l | none => sorted.size)
     return page.map (·.1)
 
@@ -1390,7 +1698,7 @@ def runRecursive (env : Env) (id : Nat) : CSel → Nat → EM (Array Row)
       | some e => do let v ← eval env e fuel; let i := Num.castToInt v; pure (if i < 0 then none else some i.toNatClampNeg)
       | none => pure none
     let anchor ← hoistCore env anchor fuel
-    let init := (← runCore env none anchor none fuel).map (·.1)
+    let init := (← runCore env none none anchor none fuel).map (·.1)
     -- the recursive core runs once per queued row: compiled once
     let recurC := recur.compile (fun env q => runSel env q fuel) fuel
     let init := if distinct then (firstOccurrences init).map (init.getD · #[]) else init
@@ -1403,22 +1711,24 @@ def runRecursive (env : Env) (id : Nat) : CSel → Nat → EM (Array Row)
       qi := qi + 1
       let cs := if env.ctes.size ≤ id then env.ctes ++ Array.replicate (id + 1 - env.ctes.size) #[] else env.ctes
       let env' := { env with ctes := cs.setIfInBounds id #[row] }
-      let rs := (← runCore env' (some recurC) recur none fuel).map (·.1)
+      let rs := (← runCore env' (some recurC) none recur none fuel).map (·.1)
       for r in rs do
         if distinct && result.any (cmpRows · r == .eq) then continue
         result := result.push r
     return match lim with | some l => result.extract 0 l | none => result
 
-/-- Runs one core: each result row with its ORDER BY keys. `pre?`: the core compiled already; `hint`: enough rows (a
-LIMIT with no ORDER BY). -/
-def runCore (env : Env) (pre? : Option CoreRun) : CCore → Option Nat → Nat → EM (Array (Row × Row))
+/-- Runs one core: each result row with its ORDER BY keys. `pre?`: the core compiled already; `ord`: the rows are the whole
+SELECT's, to be put in ORDER BY's order here (only the first `n` of them, when bounded); `hint`: enough rows (a LIMIT
+with no ORDER BY). -/
+def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bool × Collation) × Option Nat)) :
+    CCore → Option Nat → Nat → EM (Array (Row × Row))
   | _, _, 0 => .error "query nested too deeply"
   | .values rows order, _, fuel+1 => do
     let mut out := #[]
     for r in rows do
       let vs ← r.mapM fun e => eval env e fuel
       out := out.push (vs, order.map (vs.getD · .null))
-    return out
+    return match ord with | some (dirs, bound) => orderRows dirs bound out | none => out
   | .select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width minmax wins, hint, fuel+1 => do
     let frame0 : Row := Array.replicate width .null
     -- the core's expressions, compiled once (or by the caller, for all its runs)
@@ -1441,30 +1751,51 @@ def runCore (env : Env) (pre? : Option CoreRun) : CCore → Option Nat → Nat �
         | _ => default
     let rightIdx := srcs.findIdx? isRightOuter
     let hint := if isAgg || distinct || !order.isEmpty || !wins.isEmpty || rightIdx.isSome then none else hint
-    let ⟨_, runs, groupByC, aggRuns, havingC, colsC, orderC, need, needs⟩ := cr
-    -- a RIGHT or FULL JOIN's item: its rows are counted once, and the join marks those some earlier row matched
-    let rightCount ← match rightIdx with
-      | some r => do
-        let (raw, cs) ← candidates (env.push frame0) (srcs.getD r default) (runs.getD r default) (subs.getD r none) none fuel
-        pure (if raw.isEmpty then cs.size else raw.size)
-      | none => pure 0
-    let (frames, matched) ← if !preOk then pure (#[], #[]) else if srcs.isEmpty then pure (#[frame0], #[])
-      else joinFrom (env.push frame0) srcs runs subs autos needs 0 (#[], Array.replicate rightCount false) hint fuel
-    -- then its rows nothing matched, with NULLs for the items before it
-    let frames ← match rightIdx with
-      | none => pure frames
-      | some r => do
-        let src := srcs.getD r default
-        let (raw, cs) ← candidates (env.push frame0) src (runs.getD r default) (subs.getD r none) none fuel
-        let mut acc : Array Row × Array Bool := (frames, #[])
-        for j in [0:rightCount] do
-          if matched.getD j true then continue
-          let e := env.push (bindCand src need frame0 raw cs j)
-          let mut ok := true
-          for k in [0:r+1] do
-            unless ← (runs.getD k default).conds.run e do ok := false; break
-          if ok then acc ← joinFrom e srcs runs subs autos needs (r+1) acc none fuel
-        pure acc.1
+    let ⟨_, runs, groupByC, aggRuns, havingC, colsC, orderC, need, needs, late, keySrcs⟩ := cr
+    -- ORDER BY of plain rows: each joined row goes into the sorter as the join makes it, its keys packed in a record (a
+    -- key that is a table column read from the record in place) and its computed result columns evaluated; the columns
+    -- only plain result columns and keys read are decoded once it is output
+    if let some (dirs, bound) := ord then
+      if !isAgg && !distinct && wins.isEmpty then
+        let minus (m : Array Bool) : Array Bool := m.mapIdx fun k b => b && !late.getD k false
+        let needs := needs.map fun (f, r) => (minus f, minus r)
+        let plain : Array (Option Nat) := cols.map fun c => match c with | .col 0 s => some s | _ => none
+        let computed : Array CFn := (cols.zip colsC).filterMap fun (c, f) => match c with | .col 0 _ => none | _ => some f
+        let keyFns : Array CFn := (keySrcs.zip orderC).filterMap fun (k, f) => match k with | .expr _ => some f | _ => none
+        let emit (st : Sorter) (e : Env) (refs : Array RowRef) : EM Sorter := do
+          let vals ← computed.mapM (·.run e)
+          let ks ← keyFns.mapM (·.run e)
+          let seq := st.seq
+          match bound with
+          | none =>
+            let en : SortEntry := { key := keyRecord keySrcs refs ks, seq, vals, frame := e.top, refs }
+            return { rows := st.rows.push en, seq := seq + 1 }
+          | some n =>
+            if st.rows.size < n then
+              let en : SortEntry := { key := keyRecord keySrcs refs ks, seq, vals, frame := e.top, refs }
+              let rows := siftUp (cmpEntry dirs) (st.rows.push en) st.rows.size (n + 1)
+              return { rows, seq := seq + 1 }
+            -- full: a row below the largest kept one takes its place (its keys are packed only then)
+            match st.rows[0]? with
+            | some w =>
+              if cmpKeyCand dirs keySrcs refs ks w.key == .gt then
+                let en : SortEntry := { key := keyRecord keySrcs refs ks, seq, vals, frame := e.top, refs }
+                let rows := siftDown (cmpEntry dirs) (st.rows.setIfInBounds 0 en) 0 (n + 1)
+                return { rows, seq := seq + 1 }
+              else return { st with seq := seq + 1 }
+            | none => return { st with seq := seq + 1 }
+        let track := late.any id || keySrcs.any (!· matches .expr _)
+        let st ← if !preOk then pure ({} : Sorter)
+          else joinAll emit (fun _ => false) track rightIdx env frame0 srcs runs subs autos needs need {} fuel
+        return (sortBy st.rows (cmpEntry dirs)).map fun en =>
+          let fr := bindLate srcs late en.frame en.refs
+          let row := (plain.foldl (fun ((row : Row), j) p => match p with
+            | some s => (row.push (fr.getD s .null), j)
+            | none => (row.push (en.vals.getD j .null), j + 1)) (#[], 0)).1
+          (row, #[])
+    let frames ← if !preOk then pure #[] else
+      joinAll (fun (rows : Array Row) e _ => pure (rows.push e.top)) (fun rows => hint.any (rows.size ≥ ·)) false rightIdx env frame0
+        srcs runs subs autos needs need #[] fuel
     -- each result row's environment: its frame, or (aggregates) its group's
     let envs : Array Env ← if !isAgg then pure (frames.map env.push) else do
       -- groups: consecutive runs of equal GROUP BY keys after a stable sort
@@ -1535,10 +1866,8 @@ def runCore (env : Env) (pre? : Option CoreRun) : CCore → Option Nat → Nat �
       let vs ← colsC.mapM (·.run e)
       let ks ← orderC.mapM (·.run e)
       out := out.push (vs, ks)
-    if distinct then
-      let rows := out.map (·.1)
-      return (firstOccurrences rows rcolls).map (out.getD · default)
-    return out
+    let rows := if distinct then (firstOccurrences (out.map (·.1)) rcolls).map (out.getD · default) else out
+    return match ord with | some (dirs, bound) => orderRows dirs bound rows | none => rows
 
 /-- A window function's value for each result row: rows ordered by partition and ORDER BY keys, peers grouped, and the
 frame of each row found (ROWS, RANGE or GROUPS, with EXCLUDE). -/
@@ -1718,119 +2047,6 @@ def winColumn (envs : Array Env) (w : CWin) : Nat → EM (Array Value)
         res := res.setIfInBounds row v
     return res
 
-/-- The nested-loop join from FROM item `i` on: each candidate row of the item bound into the frame, its conditions
-checked, then the later items; a LEFT JOIN's item with no match binds NULLs; a RIGHT JOIN's matched rows are marked.
-`needs`: each item's slots its conditions read, and the rest it binds once they pass. -/
-def joinFrom (e : Env) (srcs : Array CSource) (runs : Array SrcRun) (subs : Array (Option (Array Row)))
-    (autos : Array (Option (Thunk AutoIdx))) (needs : Array (Array Bool × Array Bool)) (i : Nat) (acc : Array Row × Array Bool) (hint : Option Nat) :
-    Nat → EM (Array Row × Array Bool)
-  | 0 => .error "query nested too deeply"
-  | fuel+1 => do
-    let some src := srcs[i]? | return (acc.1.push e.top, acc.2)
-    let (base, n, left, right) := match src with
-      | .table _ n _ _ _ base _ left right _ _ => (base, n + 1, left, right)
-      | .sub _ n base left right _ _ => (base, n, left, right)
-      | .cte _ n base left right _ _ => (base, n, left, right)
-      | .tvf _ _ n base left right _ => (base, n, left, right)
-    let run := runs.getD i default
-    let (raw, cands) ← candidates e src run (subs.getD i none) (autos.getD i none) fuel
-    let (first, rest) := needs.getD i (#[], #[])
-    let frame := e.top
-    let mut acc := acc
-    let mut matched := false
-    -- one environment, its frame written in place row after row (copied only when a row is kept)
-    let mut e := e
-    let count := if raw.isEmpty then cands.size else raw.size
-    for j in [0:count] do
-      if let some h := hint then if acc.1.size ≥ h then break
-      e := e.modifyTop (bindCand src first · raw cands j)
-      if left || right then
-        unless ← run.on.run e do continue
-      matched := true
-      if right then acc := (acc.1, acc.2.setIfInBounds j true)
-      if ← run.resid.run e then
-        e := e.modifyTop (bindRest src rest · raw j)
-        acc ← joinFrom e srcs runs subs autos needs (i+1) acc hint fuel
-    if left && !matched then
-      let nulls := n.fold (fun k _ (fr : Row) => fr.setIfInBounds (base + k) .null) frame
-      let en := e.modifyTop fun _ => nulls
-      if ← run.conds.run en then
-        acc ← joinFrom en srcs runs subs autos needs (i+1) acc hint fuel
-    return acc
-
-/-- The rows a FROM item offers for the current frame: a table's (rowid, record) pairs through its access path, or a
-subquery's or WITH table's rows. `auto`: the item's transient index. -/
-def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) :
-    Nat → EM (Array (Int64 × ByteArray) × Array Row)
-  | 0 => .error "query nested too deeply"
-  | _+1 => do
-    if let some ai := auto then
-      let keys := src.autoKeys
-      let mut probe : Array Value := #[]
-      for (x, aff) in run.auto do
-        let v := Value.applyCmpAff aff (← x.run e)
-        if v.isNull then return (#[], #[])
-        probe := probe.push v
-      return autoSeek ai.get (keys.map (·.2.2.2)) probe
-    match src with
-    | .sub .. => .ok (#[], sub.getD #[])
-    | .cte id .. => .ok (#[], e.ctes.getD id #[])
-    | .tvf fn _ _ _ _ _ _ => do
-      let vs ← run.args.mapM (·.run e)
-      if fn.startsWith "pragma_" then
-        return (#[], ((schemaPragma e.schema (fn.drop 7).toString ((vs.getD 0 .null).toText)).map (·.2)).getD #[])
-      let rows ← tvfRows (fn == "json_tree") (vs.getD 0 .null) vs[1]?
-      return (#[], rows)
-    | .table root n _ realCols defaults _ _ _ _ layout _ => do
-      let p := e.pager
-      -- a WITHOUT ROWID table: its index-format tree's records, each field placed in its column
-      if !layout.isEmpty then
-        return (#[], BTree.foldIndex p root #[] fun acc r => acc.push (worRow n layout realCols defaults r))
-      let dec (rs : Array (Int64 × ByteArray)) : Array (Int64 × ByteArray) × Array Row := (rs, #[])
-      let find (k : Int64) : Array (Int64 × ByteArray) :=
-        match BTree.tableFind p root k with | some c => #[(k, c.payload)] | none => #[]
-      match run.access with
-      | .full => return dec (BTree.foldTable p root #[] fun acc k r => if litsPass run.lits r then acc.push (k, r) else acc)
-      | .rowidEq x => do
-        let v ← x.run e
-        return match toRowid? v with | some k => dec (find k) | none => (#[], #[])
-      | .rowidIn items => do
-        let vs ← items.mapM (·.run e)
-        let ks := sortBy (vs.filterMap toRowid?) compare
-        let ks := ks.foldl (fun acc k => if acc.back? == some k then acc else acc.push k) #[]
-        return dec (ks.foldl (fun acc k => acc ++ find k) #[])
-      | .rowidRange lo hi => do
-        let lo' ← match lo with
-          | some (x, incl) => do let v ← x.run e; pure (boundRowid v incl true)
-          | none => pure none
-        let hi' ← match hi with
-          | some (x, incl) => do let v ← x.run e; pure (boundRowid v incl false)
-          | none => pure none
-        return dec (scanRange p root lo' hi' (litsPass run.lits))
-      | .index iroot ki eqs lo hi => do
-        let mut eqv : Array Value := #[]
-        for (x, aff) in eqs do
-          let v := Value.applyCmpAff aff (← x.run e)
-          if v.isNull then return (#[], #[])
-          eqv := eqv.push v
-        let lov ← match lo with
-          | some (x, _, aff) => do
-            let v := Value.applyCmpAff aff (← x.run e)
-            pure (if v.isNull then none else some v)
-          | none => pure none
-        let hiv ← match hi with
-          | some (x, incl, aff) => do
-            let v := Value.applyCmpAff aff (← x.run e)
-            pure (if v.isNull then none else some (v, incl))
-          | none => pure none
-        let eqProbe := encodeRecord eqv
-        let probe := match lov with | some v => encodeRecord (eqv.push v) | none => eqProbe
-        -- with no lower bound, NULL entries (which sort first) are skipped by starting after them
-        let probe := if lov.isNone && hiv.isSome then encodeRecord (eqv.push (.int (-9223372036854775808)) |>.pop |>.push (Value.real (-1.0/0.0))) else probe
-        let rids := scanIndex p iroot ki probe eqProbe eqv.size hiv
-        return dec (rids.foldl (fun acc k => acc ++ find k) #[])
-      -- with no transient index passed in (a RIGHT JOIN's own pass), the whole table
-      | .auto _ => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
 end
 
 end LSql
