@@ -18,7 +18,7 @@ functions (json_each, json_tree, pragma_*). What is left out is listed in
 ```sh
 H=~/workspace/high-perf-lean                       # the Lean 4.35 toolchain, clang, perf
 nix develop $H -c lake build                       # stock: .lake/build/bin/lsqlite3
-(cd hpl && nix develop $H -c bash -c ". $H/tools/cc.sh && lake build")   # hpl: hpl/.lake/build/bin/lsqlite3 (about an hour)
+(cd hpl && nix develop $H -c lake build)           # hpl: hpl/.lake/build/bin/lsqlite3 (about an hour; hpl's -K cc/lto/leanrt options pass through)
 .lake/build/bin/lsqlite3 [FILE | :memory:] [SQL]   # SQL from the argument, else stdin
 ./check.sh                                         # the gate: totality, builds, proofs, all tests on both builds
 ```
@@ -135,7 +135,7 @@ The engines:
 - **C sqlite3:** sqlite3 3.54.0 from nixpkgs.
 - **stock Lean (gcc):** Lean's own C backend, with the C compiled by the devshell's gcc (`leanc -O3`).
 - **stock Lean (clang):** a control build (`clang/`). The same Lean C, compiled by hpl's clang wrapper
-  (`tools/cc.sh`), but linked against the toolchain's standard runtime, not hpl's ThinLTO one. It separates the C
+  (`lake query hplcc`), but linked against the toolchain's standard runtime, not hpl's ThinLTO one. It separates the C
   compiler from hpl's own passes.
 - **hpl `--all`:** hpl (high-perf-lean at f78b82312f) compiles every function of every module. It refused none.
 - **hpl `--all --no-unbox`:** the same, keeping Lean's data layout (`hpl-nounbox/`). Loop fusion is disabled in five
@@ -223,7 +223,7 @@ hpl bug found on the way: with `--no-unbox`, a fused `List.range` loop (`List.ra
 ```sh
 H=~/workspace/high-perf-lean
 nix develop $H -c lake build                                                    # stock (gcc)
-for d in clang hpl hpl-nounbox; do (cd $d && nix develop $H -c bash -c ". $H/tools/cc.sh && lake build"); done
+clang/build.sh; for d in hpl hpl-nounbox; do (cd $d && nix develop $H -c lake build); done
 cd bench && ./gen.sh && nix develop $H -c ./run.sh 5                             # perf comes from the devshell
 ```
 
