@@ -708,7 +708,7 @@ def firstRows (dirs : Array Collation) (rows : Array (Row × Row)) : Array (Row 
     let (dup, seen) := seen.containsThenInsert r.1
     (if dup then out else out.push r, seen)) (#[], {})).1
 
-/-- The indexes of each row's first occurrence, in order (UNION, a recursive WITH table, window DISTINCT). -/
+/-- The indexes of each row's first occurrence, in order (UNION, window DISTINCT). -/
 def firstOccurrences (rows : Array Row) (colls : Array Collation := #[]) : Array Nat :=
   let idx := sortBy (rows.mapIdx fun i r => (r, i)) fun (a, i) (b, j) => match cmpRowsColl colls a b with
     | .eq => compare i j
@@ -1384,6 +1384,14 @@ structure CoreRun where
   keys : Array KeySrc
 deriving Inhabited
 
+/-- What the runs of one core share: its expressions compiled, and the rows and transient indexes of its FROM items but
+the `fresh` ones (a recursive step's queue row), made once for all its runs. -/
+structure CorePrep where
+  run : CoreRun
+  fresh : Array Bool
+  subs : Array (Option (Array Row))
+  autos : Array (Option (Thunk AutoIdx))
+
 /-- A core's expressions compiled once, for all its rows (a VALUES core has none). -/
 def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
   match core with
@@ -1615,6 +1623,15 @@ def candidatesAll (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array 
       | .auto _ => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
       | .ordered _ _ => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))
 
+/-- A FROM item's transient index, built once some row reaches it (none: it has no keys); `rows`: a subquery's or WITH
+table's rows. -/
+def itemAuto (env : Env) (width : Nat) (s : CSource) (rows : Option (Array Row)) : Option (Thunk AutoIdx) :=
+  let keys := s.autoKeys
+  if keys.isEmpty then none else some <| Thunk.mk fun _ => match s with
+    | .table root _ _ _ _ _ _ _ _ _ _ => buildAuto s width keys (BTree.foldTable env.pager root #[] fun acc k r => acc.push (k, r)) #[]
+    | .sub .. | .cte .. => buildAuto s width keys #[] (rows.getD #[])
+    | _ => default
+
 /-- A FROM item's candidate rows: those of `candidatesAll`, or (an ordered access path) a lazy scan of the table in order,
 whose first chunk is still to be read (`Rest`). -/
 def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row)) (auto : Option (Thunk AutoIdx)) :
@@ -1815,6 +1832,15 @@ def runSel (env : Env) : CSel → Nat → EM (Array Row)
   | q, fuel+1 => foldSel env q fuel #[] (fun _ => false) keepRow
   termination_by _ fuel => fuel
 
+/-- A FROM subquery's or WITH table's rows, computed whole (none for any other item). -/
+def itemRows (env : Env) : CSource → Nat → EM (Option (Array Row))
+  | _, 0 => .error "query nested too deeply"
+  | s, fuel+1 => match s with
+    | .sub q _ _ _ _ _ _ => do let r ← runSel env q fuel; pure (some r)
+    | .cte id .. => (env.ctes.getD id {}).rows.get.map some
+    | _ => pure none
+  termination_by _ fuel => fuel
+
 /-- Runs a SELECT into a consumer: each row read into its state in turn, until `stop` holds. One core or a UNION ALL,
 with no ORDER BY, yields each row as its join makes it (sqlite's co-routine), so a row past what the consumer reads or
 the LIMIT is never computed; any other SELECT is computed whole first. -/
@@ -1893,10 +1919,22 @@ def foldRecursive (env : Env) (id : Nat) : CSel → Nat → σ → (σ → Bool)
       | none => pure none
     let anchor ← hoistCore env anchor fuel
     let first ← runCore env none none anchor fuel #[] (fun _ => false) fun rs r => do pure (rs.push (← r ()).1)
-    -- the recursive core runs once per queued row: compiled once
-    let recurC := recur.compile (fun env q => runSel env q fuel) fuel
-    let first := if distinct then (firstOccurrences first).map (first.getD · #[]) else first
-    let mut result := first
+    -- the recursive core runs once per queued row, prepared at the first for all its runs (sqlite's one program for
+    -- the step): its uncorrelated subqueries hoisted, its expressions compiled, the rows and transient indexes of its
+    -- FROM items but the queue row made
+    let fresh := match recur with
+      | .select srcs .. => srcs.map fun s => match s with | .cte cid .. => cid == id | _ => false
+      | .values .. => #[]
+    let mut prep : Option (CCore × CorePrep) := none
+    -- UNION: the rows seen, so a row already queued once is not queued again
+    let mut seen : Std.TreeSet Row cmpRows := {}
+    let mut result := #[]
+    for r in first do
+      if distinct then
+        let (dup, s) := seen.containsThenInsert r
+        seen := s
+        if dup then continue
+      result := result.push r
     let mut qi := 0
     let mut st := init
     for _ in [0:1000000000] do
@@ -1907,17 +1945,32 @@ def foldRecursive (env : Env) (id : Nat) : CSel → Nat → σ → (σ → Bool)
       if lim.any (result.size ≥ ·) || stop st then continue
       let cs := if env.ctes.size ≤ id then env.ctes ++ Array.replicate (id + 1 - env.ctes.size) {} else env.ctes
       let env' := { env with ctes := cs.setIfInBounds id { rows := Thunk.pure (.ok #[row]) } }
-      let rs ← runCore env' (some recurC) none recur fuel #[] (fun _ => false) fun rs r => do pure (rs.push (← r ()).1)
+      let (core, p) ← match prep with
+        | some cp => pure cp
+        | none => do
+          let core ← hoistCore env recur fuel
+          let run := core.compile (fun env q => runSel env q fuel) fuel
+          let (subs, autos) ← match core with
+            | .select srcs _ _ _ _ _ _ _ _ _ _ _ width _ => do
+              let subs ← srcs.mapIdxM fun i s => if fresh.getD i true then pure none else itemRows env s fuel
+              pure (subs, srcs.mapIdx fun i s => if fresh.getD i true then none else itemAuto env width s (subs.getD i none))
+            | .values .. => pure (#[], #[])
+          pure (core, { run, fresh, subs, autos })
+      prep := some (core, p)
+      let rs ← runCore env' (some p) none core fuel #[] (fun _ => false) fun rs r => do pure (rs.push (← r ()).1)
       for r in rs do
-        if distinct && result.any (cmpRows · r == .eq) then continue
+        if distinct then
+          let (dup, s) := seen.containsThenInsert r
+          seen := s
+          if dup then continue
         result := result.push r
     return st
   termination_by _ fuel _ _ _ => fuel
 
 /-- Runs one core into a consumer: each result row with its ORDER BY keys, passed as how to compute it, until `stop` holds.
-`pre?`: the core compiled already; `ord`: the rows are the whole SELECT's, to be put in ORDER BY's order here (only the
+`prep?`: the core prepared already (compiled, the FROM items it shares across runs made); `ord`: the rows are the whole SELECT's, to be put in ORDER BY's order here (only the
 first `n` of them, when bounded). -/
-def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bool × Collation) × Option Nat)) :
+def runCore (env : Env) (prep? : Option CorePrep) (ord : Option (Array (Bool × Bool × Collation) × Option Nat)) :
     CCore → Nat → σ → (σ → Bool) → (σ → (Unit → EM (Row × Row)) → EM σ) → EM σ
   | _, 0, _, _, _ => .error "query nested too deeply"
   | .values rows order, fuel+1, init, stop, put => do
@@ -1938,15 +1991,17 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
   | .select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width wins, fuel+1, init, stop, put => do
     let frame0 : Row := Array.replicate width .null
     -- the core's expressions, compiled once (or by the caller, for all its runs)
-    let cr := pre?.getD ((CCore.select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width
+    let cr := (prep?.map (·.run)).getD ((CCore.select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width
       wins).compile (fun env q => runSel env q fuel) fuel)
     let preOk ← cr.pre (env.push frame0)
     unless preOk do
       if isAgg && groupBy.isEmpty then pure () else return init
     let rightIdx := srcs.findIdx? isRightOuter
+    -- the FROM items whose rows and transient index the caller made for all its runs
+    let shared (i : Nat) : Bool := prep?.any fun p => !p.fresh.getD i true
     -- the first FROM item, a subquery or a WITH table read once: its rows as its SELECT yields them (over the frames of
     -- the SELECT a WITH table belongs to), unless a RIGHT JOIN or a transient index reads them again
-    let outer (τ : Type) : Option (RowFold τ) := if rightIdx.isSome then none else match (srcs[0]? : Option CSource) with
+    let outer (τ : Type) : Option (RowFold τ) := if rightIdx.isSome || shared 0 then none else match (srcs[0]? : Option CSource) with
       | some (.sub q _ _ _ _ _ keys) => if keys.isEmpty then some (foldSel env q fuel) else none
       | some (.cte id _ _ _ _ _ keys) => if !keys.isEmpty then none else
         (env.ctes.getD id {}).stream.map fun (.mk cid q recursive _, depth) =>
@@ -1955,17 +2010,14 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
       | _ => none
     let streamed := (outer Unit).isSome
     -- the other FROM subqueries and WITH tables: computed whole, once
-    let subs ← srcs.mapIdxM fun i s => match s with
-      | .sub q _ _ _ _ _ _ => if i == 0 && streamed then pure none else do let r ← runSel env q fuel; pure (some r)
-      | .cte id .. => if i == 0 && streamed then pure none else (env.ctes.getD id {}).rows.get.map some
-      | _ => pure none
+    let subs ← srcs.mapIdxM fun i s =>
+      match prep? with
+      | some p => if shared i then pure (p.subs.getD i none) else itemRows env s fuel
+      | none => if i == 0 && streamed then pure none else itemRows env s fuel
     -- transient indexes, built once (and only once some row reaches their item)
-    let autos := srcs.mapIdx fun i s =>
-      let keys := s.autoKeys
-      if keys.isEmpty then none else some <| Thunk.mk fun _ => match s with
-        | .table root _ _ _ _ _ _ _ _ _ _ => buildAuto s width keys (BTree.foldTable env.pager root #[] fun acc k r => acc.push (k, r)) #[]
-        | .sub .. | .cte .. => buildAuto s width keys #[] ((subs.getD i none).getD #[])
-        | _ => default
+    let autos := srcs.mapIdx fun i s => match prep? with
+      | some p => if shared i then p.autos.getD i none else itemAuto env width s (subs.getD i none)
+      | none => itemAuto env width s (subs.getD i none)
     -- result rows computed already, in turn to the consumer
     let putAll (rows : Array (Row × Row)) : EM σ := do
       let mut st := init

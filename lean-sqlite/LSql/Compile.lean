@@ -1268,14 +1268,14 @@ def compileSelectCore (env : CEnv) (distinct : Bool) (cols : List ResultCol) (wh
       | .sub q n base left right _ _ => .sub q n base left right (leftOn.getD j #[]) #[]
       | .cte id n base left right _ _ => .cte id n base left right (leftOn.getD j #[]) #[]
       | .tvf tr args n base left right _ => .tvf tr args n base left right (leftOn.getD j #[])
-    -- an inner item read whole gets a transient index, unless each earlier item gives one row (a rowid lookup, a
-    -- recursive WITH table's queue row)
-    let oneRow (s : CSource) : Bool := match s with
-      | .table _ _ _ _ _ _ (.rowidEq _) _ _ _ _ => true
+    -- an inner item read whole gets a transient index, unless each earlier item gives one row (a rowid lookup); a
+    -- recursive WITH table's queue row is one row, not indexed, but its runs share the indexes of the other items
+    let oneRow (s : CSource) : Bool := s matches .table _ _ _ _ _ _ (.rowidEq _) _ _ _ _
+    let isQueue (s : CSource) : Bool := match s with
       | .cte id .. => env.ctes.any fun c => c.id == id && c.queue
       | _ => false
     let srcs : Array CSource := if srcs.size < 2 then srcs else srcs.mapIdx fun j s =>
-      if j == 0 || (srcs.extract 0 j).all oneRow then s else
+      if j == 0 || isQueue s || (srcs.extract 0 j).all oneRow then s else
       let keys (base n : Nat) (rowid : Option Nat) (left : Bool) (on : Array CExpr) :=
         autoKeys base n rowid (if left then on else allConds)
       match s with
