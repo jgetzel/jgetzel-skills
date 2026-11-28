@@ -16,7 +16,7 @@ The two hpl builds share one source tree (`srcDir ".."`):
 | build | directory | hpl arguments |
 |---|---|---|
 | stock | `lean-sqlite/.lake` | `leanc -O3`, gcc |
-| stock-clang (control) | `lean-sqlite/clang/` | stock Lean C, compiled with `tools/cc.sh` clang, standard runtime |
+| stock-clang (control) | `lean-sqlite/clang/` | stock Lean C, compiled with hpl's clang (`lake query hplcc`), standard runtime |
 | hpl | `lean-sqlite/hpl/` | `--all`, `require hpl`, the `hplO` facet, the ThinLTO runtime |
 | hpl-nounbox | `lean-sqlite/hpl-nounbox/` | `--all --no-unbox`, plus `--disable fuse` in LSql.Compile, LSql.Exec, LSql.Check, LSql.Shell and Main (issue 3) |
 
@@ -101,7 +101,7 @@ built in the devshell. It has not been rebuilt since.
 ```sh
 H=~/workspace/high-perf-lean; L=/home/jgetzel/workspace/jgetzel-skills/lean-sqlite
 cd $L && nix develop $H -c lake build
-for d in clang hpl hpl-nounbox; do (cd $L/$d && nix develop $H -c bash -c ". $H/tools/cc.sh && lake build"); done
+$L/clang/build.sh; for d in hpl hpl-nounbox; do (cd $L/$d && nix develop $H -c lake build); done
 cd $L/bench && ./gen.sh && nix develop $H -c ./run.sh 5        # writes results.tsv; ENGINES="stock hpl" ./run.sh 5 insert for a subset
 ```
 

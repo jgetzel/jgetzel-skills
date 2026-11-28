@@ -2,7 +2,7 @@ import Lake
 open Lake DSL System
 
 /-- A control build: the lean-sqlite sources (`..`) compiled by stock Lean, but with the C toolchain the hpl build uses
-(clang through high-perf-lean's tools/cc.sh, its ThinLTO runtime), so stock-vs-hpl compares the compilers alone. -/
+(clang as high-perf-lean's `lake query hplcc` resolves it, `build.sh`), so stock-vs-hpl compares the compilers alone. -/
 package «lean-sqlite-clang» where
   moreLeancArgs := #["-O3"]
 

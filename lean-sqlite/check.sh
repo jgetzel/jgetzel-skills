@@ -20,7 +20,7 @@ tests/diff.sh .lake/build/bin/lsqlite3 | tail -1 || fail=1
 tests/diff.sh --file .lake/build/bin/lsqlite3 | tail -1 || fail=1
 tests/compat.sh .lake/build/bin/lsqlite3 || fail=1
 if [ -x hpl/.lake/build/bin/lsqlite3 ] || [ "${HPL_BUILD_CHECK:-1}" = 1 ]; then
-  (cd hpl && lean_do bash -c '. "$HOME/workspace/high-perf-lean/tools/cc.sh" && lake build' >../.lake/hpl-build.log 2>&1) \
+  (cd hpl && lean_do lake build >../.lake/hpl-build.log 2>&1) \
     || { tail -20 .lake/hpl-build.log; echo "check: hpl build failed" >&2; exit 1; }
   echo "hpl refused: $(cat hpl/.lake/build/ir/hpl/*.refused 2>/dev/null | wc -l) functions (hpl/.lake/build/ir/hpl/*.refused)"
   tests/diff.sh hpl/.lake/build/bin/lsqlite3 | tail -1 || fail=1
