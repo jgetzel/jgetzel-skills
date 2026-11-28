@@ -63,6 +63,24 @@ def writeFile (db : DB) : IO DB := do
     IO.FS.writeBinFile path bytes
     return { db with pager := p }
 
+/-- The lines the shell prints after a parse error at byte `off` of `sql` (shell.c's shell_error_context): up to 78 bytes
+of the statement, ending near the error when it is past byte 50, and a caret line below the offending byte. -/
+def errorContext (sql : String) (off : Nat) : String :=
+  let bytes := sql.toUTF8
+  if off ≥ bytes.size then "" else
+  let isCont (b : ByteArray) (i : Nat) : Bool := (b[i]?.getD 0) &&& 0xc0 == 0x80
+  -- the first byte shown: at most 50 bytes before the error, not inside a character
+  let skip := (List.range (off - min off 50)).foldl (fun i _ => i + 1) 0
+  let start := (List.range bytes.size).foldl (fun i _ => if i < bytes.size && isCont bytes i then i + 1 else i) skip
+  let rest := bytes.extract start bytes.size
+  let len := if rest.size > 78 then (List.range 78).foldl (fun l _ => if l > 0 && isCont rest l then l - 1 else l) 78 else rest.size
+  let code := (rest.extract 0 len).data.map fun b => if b == 32 || (b ≥ 9 && b ≤ 13) then 32 else b
+  let shown := (String.fromUTF8? ⟨code⟩).getD ""
+  let col := off - start
+  let pad (n : Nat) : String := "".pushn ' ' n
+  if col < 25 then s!"\n  {shown}\n  {pad col}^--- error here"
+  else s!"\n  {shown}\n  {pad (col - 14)}error here ---^"
+
 /-- Runs the statements of `sql` (which starts on line `line`); an error stops the rest of it. -/
 def runSql (out err : IO.FS.Stream) (st : St) (sql : String) (line : Nat) : IO St := do
   let mut st := st
@@ -70,7 +88,10 @@ def runSql (out err : IO.FS.Stream) (st : St) (sql : String) (line : Nat) : IO S
   for _ in [0:sql.utf8ByteSize + 1] do
     match Parse.parseNext sql pos with
     | .error e =>
-      errLine out err s!"Parse error near line {line + lineOf sql e.pos}: {e.msg}"
+      let first := (List.range (sql.utf8ByteSize - pos)).foldl (fun i _ =>
+        if i < sql.utf8ByteSize && (Lex.byteAt sql i == 32 || (Lex.byteAt sql i ≥ 9 && Lex.byteAt sql i ≤ 13)) then i + 1 else i) pos
+      let rest := String.fromUTF8? ⟨(sql.toUTF8.extract first sql.utf8ByteSize).data⟩
+      errLine out err s!"Parse error near line {line}: {e.msg}{errorContext (rest.getD "") (e.pos - first)}"
       return { st with failed := true }
     | .ok none => break
     | .ok (some (stmt, next)) =>
@@ -345,10 +366,10 @@ def runInput (out err : IO.FS.Stream) (st : St) (input : String) : Nat → IO St
     buf := buf ++ l ++ "\n"
     if Parse.isComplete buf then
       if st.echo then out.putStr buf
-      st ← runSql out err st buf bufLine
+      st ← runSql out err st (buf.dropEnd 1).toString bufLine
       buf := ""
   if !buf.trimAscii.isEmpty && !st.quit then
-    st ← runSql out err st buf bufLine
+    st ← runSql out err st (buf.dropEndWhile (· == '\n')).toString bufLine
   return st
 
 /-- All of a stream, read in 64 KiB blocks (a fuel-bounded loop: 2^40 blocks is more input than exists). -/
