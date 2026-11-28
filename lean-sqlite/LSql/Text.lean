@@ -36,7 +36,7 @@ def textBytes (s : String) : ByteArray :=
   else s.toUTF8
 
 /-- The length of a text value's bytes. -/
-def textLen (s : String) : Nat := if hasEsc s then (textBytes s).size else s.utf8ByteSize
+def textLen (s : String) : Nat := (textBytes s).size
 
 /-- The valid UTF-8 scalar starting at byte `i` of `b` (other than one standing for a raw byte) and its length. -/
 def scalarAt (b : ByteArray) (i : Nat) : Option (Char × Nat) :=

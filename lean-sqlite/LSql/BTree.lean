@@ -328,30 +328,29 @@ where
 
 /-! ## Index trees -/
 
-/-- (`probe` is `key` decoded) -/
-def iInsert (ki : KeyInfo) (pg : Pgno) (key : ByteArray) (probe : Array Value) : Nat → Pager → Pager × ISplits
+def iInsert (ki : KeyInfo) (pg : Pgno) (key : ByteArray) : Nat → Pager → Pager × ISplits
   | 0, p => (p, #[])
   | fuel+1, p =>
     let (page, p) := p.take pg
     match page with
     | .index (.ileaf cells used) =>
-      let (i, found) := searchRec ki cells probe
+      let (i, found) := searchRec ki cells (decodeRecord key)
       if found then (p.put pg (.index (.ileaf cells used)), #[])
       else
         let (cell, p) := p.allocOvfl .index key 0 pg
         fitIndexLeaf p pg (cells.insertIdxIfInBounds i cell) (used + cell.size + 2)
     | .index (.iinner cells kids) =>
-      let (i, found) := searchRec ki cells probe
+      let (i, found) := searchRec ki cells (decodeRecord key)
       if found then (p.put pg (.index (.iinner cells kids)), #[])
       else
-      let (p, sp) := iInsert ki (kids.getD i 0) key probe fuel p
+      let (p, sp) := iInsert ki (kids.getD i 0) key fuel p
       if sp.isEmpty then (p.put pg (.index (.iinner cells kids)), #[])
       else fitIndexInner p pg (insertMany cells i (sp.map (·.1))) (insertMany kids (i+1) (sp.map (·.2)))
     | other => (p.put pg other, #[])
 
 /-- Inserts the entry `key` (a record ending with the rowid) in the index tree at `root` (nothing if present). -/
 def indexInsert (p : Pager) (ki : KeyInfo) (root : Pgno) (key : ByteArray) : Pager :=
-  let (p, sp) := iInsert ki root key (decodeRecord key) maxDepth p
+  let (p, sp) := iInsert ki root key maxDepth p
   growIndexRoot p root sp
 
 /-! ## Building an index tree from sorted entries -/
@@ -454,13 +453,12 @@ def removeMax (pg : Pgno) : Nat → Pager → Pager × Option Cell × Bool
       (p, m, cells.isEmpty && sp.isEmpty)
     | _ => (p, none, false)
 
-/-- (`probe`: the entry, decoded) -/
-def iDelete (ki : KeyInfo) (pg : Pgno) (probe : Array Value) : Nat → Pager → Pager × ISplits × Bool
+def iDelete (ki : KeyInfo) (pg : Pgno) (key : ByteArray) : Nat → Pager → Pager × ISplits × Bool
   | 0, p => (p, #[], false)
   | fuel+1, p =>
     match p.get pg with
     | .index (.ileaf cells used) =>
-      let (i, found) := searchRec ki cells probe
+      let (i, found) := searchRec ki cells (decodeRecord key)
       if found then
         let (_, p) := p.take pg
         let old := cells.getD i default
@@ -469,7 +467,7 @@ def iDelete (ki : KeyInfo) (pg : Pgno) (probe : Array Value) : Nat → Pager →
         (p.put pg (.index (.ileaf cells (used - (old.size + 2)))), #[], cells.isEmpty)
       else (p, #[], false)
     | .index (.iinner cells kids) =>
-      let (i, found) := searchRec ki cells probe
+      let (i, found) := searchRec ki cells (decodeRecord key)
       if found then
         -- an interior entry: its predecessor (the largest entry of its left subtree) takes its place
         let old := cells.getD i default
@@ -482,7 +480,7 @@ def iDelete (ki : KeyInfo) (pg : Pgno) (probe : Array Value) : Nat → Pager →
         let (p, sp) := fitIndexInner p pg cells kids
         (p, sp, cells.isEmpty && sp.isEmpty)
       else
-        let (p, sp, uf) := iDelete ki (kids.getD i 0) probe fuel p
+        let (p, sp, uf) := iDelete ki (kids.getD i 0) key fuel p
         if sp.isEmpty && !uf then (p, #[], false) else
         let (_, p) := p.take pg
         let cells := insertMany cells i (sp.map (·.1))
@@ -494,7 +492,7 @@ def iDelete (ki : KeyInfo) (pg : Pgno) (probe : Array Value) : Nat → Pager →
 
 /-- Deletes the entry `key` from the index tree at `root`. -/
 def indexDelete (p : Pager) (ki : KeyInfo) (root : Pgno) (key : ByteArray) : Pager :=
-  let (p, sp, _) := iDelete ki root (decodeRecord key) maxDepth p
+  let (p, sp, _) := iDelete ki root key maxDepth p
   collapseRoot (growIndexRoot p root sp) root maxDepth
 
 /-! ## Whole trees -/
@@ -589,16 +587,16 @@ where
 
 /-- The first index entry at or after `probe` (a record; a shorter probe matches the entries it is a prefix of). -/
 def seekKey (p : Pager) (ki : KeyInfo) (root : Pgno) (probe : ByteArray) : Cursor :=
-  settle p (go (decodeRecord probe) root #[] maxDepth) (p.totalPages + maxDepth)
+  settle p (go root #[] maxDepth) (p.totalPages + maxDepth)
 where
-  go (vs : Array Value) (pg : Pgno) (stack : Array (Pgno × Nat)) : Nat → Array (Pgno × Nat)
+  go (pg : Pgno) (stack : Array (Pgno × Nat)) : Nat → Array (Pgno × Nat)
     | 0 => stack
     | fuel+1 =>
       match p.get pg with
-      | .index (.ileaf cells _) => stack.push (pg, (searchRec ki cells vs).1)
+      | .index (.ileaf cells _) => stack.push (pg, (searchRec ki cells (decodeRecord probe)).1)
       | .index (.iinner cells kids) =>
-        let i := (searchRec ki cells vs).1
-        go vs (kids.getD i 0) (stack.push (pg, i)) fuel
+        let i := (searchRec ki cells (decodeRecord probe)).1
+        go (kids.getD i 0) (stack.push (pg, i)) fuel
       | _ => stack
 
 /-- The current row of a table cursor: rowid and record. -/
