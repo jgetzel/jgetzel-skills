@@ -6,6 +6,26 @@ sqlite3ExprCollSeq), aggregate collection, and access-path choice per table (whe
 by `fuel` (an expression or query nesting depth). -/
 namespace LSql
 
+structure CteInfo where
+  name : String
+  id : Nat
+  cols : Array String
+  affs : Array Aff
+  /-- a recursive WITH table inside its own recursive SELECT: the queue's current row -/
+  queue : Bool := false
+  /-- its SELECT, when a FROM item naming it may read it in place (not recursive, not MATERIALIZED) -/
+  body : Option Select := none
+  /-- how many scopes enclose its WITH clause -/
+  nscopes : Nat := 0
+
+mutual
+/-- A result column of a FROM item read in place: a column of one of its own items (`*`), an expression over its
+items, or column `i` of one of its items that is itself read in place. -/
+inductive FlatCol where
+  | slot (s : Nat)
+  | expr (e : Expr)
+  | ref (si : SrcInfo) (i : Nat)
+
 structure SrcInfo where
   name : String
   cols : Array String
@@ -19,21 +39,24 @@ structure SrcInfo where
   width : Nat := 0
   /-- json_each / json_tree: its `value` column (slot base + 1) carries the JSON subtype for arrays and objects -/
   jsonEach : Bool := false
-  deriving Inhabited
+  /-- a subquery read in place (select.c flattenSubquery): column `i` is `flat[i]` over `inner`, the subquery's own
+  FROM items (their slots in this frame), compiled with the WITH tables `flatCtes` and `flatPad` empty scopes in front
+  of the enclosing ones; `flatNull`: the rowid slot that is NULL on a LEFT JOIN's missing row. It takes no slots. -/
+  flat : Array FlatCol := #[]
+  inner : Array SrcInfo := #[]
+  flatCtes : List CteInfo := []
+  flatPad : Nat := 0
+  flatNull : Option Nat := none
+end
 
-def SrcInfo.slots (s : SrcInfo) : Nat := if s.width > 0 then s.width else s.cols.size + (if s.rowid.isSome then 1 else 0)
+instance : Inhabited SrcInfo := ⟨{ name := "", cols := #[], affs := #[], colls := #[], base := 0, rowid := none, hidden := #[] }⟩
+
+def SrcInfo.slots (s : SrcInfo) : Nat :=
+  if !s.flat.isEmpty then 0 else if s.width > 0 then s.width else s.cols.size + (if s.rowid.isSome then 1 else 0)
 
 structure Scope where
   srcs : Array SrcInfo := #[]
   deriving Inhabited
-
-structure CteInfo where
-  name : String
-  id : Nat
-  cols : Array String
-  affs : Array Aff
-  /-- a recursive WITH table inside its own recursive SELECT: the queue's current row -/
-  queue : Bool := false
 
 structure CEnv where
   schema : Schema
@@ -144,9 +167,10 @@ def ordinalName (n : Nat) : String :=
   match n with
   | 1 => "1st" | 2 => "2nd" | 3 => "3rd" | n => s!"{n}th"
 
-/-- Column `(tbl.)name` in one scope: its slot, affinity and collation. -/
-def resolveIn (sc : Scope) (tbl : Option String) (name : String) (pos : Option Nat := none) : Except CErr (Option (Nat × Aff × Collation)) := do
-  let mut found : Option (Nat × Aff × Collation) := none
+/-- Column `(tbl.)name` in one scope: its slot (`.slot`) or, in a FROM item read in place, the item and column
+(`.ref`); its affinity and collation. -/
+def resolveIn (sc : Scope) (tbl : Option String) (name : String) (pos : Option Nat := none) : Except CErr (Option (FlatCol × Aff × Collation)) := do
+  let mut found : Option (FlatCol × Aff × Collation) := none
   let mut count := 0
   for s in sc.srcs do
     if let some t := tbl then
@@ -154,18 +178,19 @@ def resolveIn (sc : Scope) (tbl : Option String) (name : String) (pos : Option N
     match s.cols.findIdx? (nameEq · name) with
     | some i =>
       if tbl.isNone && s.hidden.getD i false then continue
-      if found.isNone then found := some (s.base + i, s.affs.getD i .none, s.colls.getD i .binary)
+      let r : FlatCol := if s.flat.isEmpty then .slot (s.base + i) else .ref s i
+      if found.isNone then found := some (r, s.affs.getD i .none, s.colls.getD i .binary)
       count := count + 1
     | none =>
       if (nameEq name "rowid" || nameEq name "oid" || nameEq name "_rowid_") then
         if let some r := s.rowid then
-          if found.isNone then found := some (r, .integer, .binary)
+          if found.isNone then found := some (.slot r, .integer, .binary)
           count := count + 1
   if count > 1 && tbl.isNone then throw { msg := s!"ambiguous column name: {name}", pos : CErr }
   return found
 
 def resolve (scopes : List Scope) (tbl : Option String) (name : String) (pos : Option Nat := none) (depth : Nat := 0) :
-    Except CErr (Option (Nat × Nat × Aff × Collation)) :=
+    Except CErr (Option (Nat × FlatCol × Aff × Collation)) :=
   match scopes with
   | [] => .ok none
   | sc :: rest => do
@@ -543,6 +568,185 @@ def oneRow : CSel → CSel
   | .mk ctes cores ops dirs limit offset n =>
     .mk ctes cores ops dirs (some ((limit.map fun e => CExpr.cmp .ne e (.lit (.int 0)) .numeric .binary).getD (.lit (.int 1)))) offset n
 
+/-- Whether `p` holds at some node of an expression, not looking into its subqueries. -/
+def exprAny (p : Expr → Bool) : Expr → Nat → Bool
+  | _, 0 => false
+  | e, fuel+1 => p e || match e with
+    | .bin _ a b => exprAny p a fuel || exprAny p b fuel
+    | .un _ a | .cast a _ | .collate a _ | .isNull a _ | .inSelect a _ _ => exprAny p a fuel
+    | .fn _ _ _ args _ | .row args => args.any (exprAny p · fuel)
+    | .case b ws els => (b.toList ++ ws.flatMap (fun (w, t) => [w, t]) ++ els.toList).any (exprAny p · fuel)
+    | .between a lo hi _ => exprAny p a fuel || exprAny p lo fuel || exprAny p hi fuel
+    | .inList a items _ => (a :: items).any (exprAny p · fuel)
+    | .matches _ a pat esc _ => (a :: pat :: esc.toList).any (exprAny p · fuel)
+    | .window _ _ _ args f (Window.mk part ord _) _ =>
+      (args ++ f.toList ++ part ++ ord.map fun (OrderTerm.mk o _ _) => o).any (exprAny p · fuel)
+    | _ => false
+
+/-- An aggregate call (as compileExpr reads one: a FILTER rides as the last argument). -/
+def isAggCall : Expr → Bool
+  | .fn name _ star args0 _ =>
+    let n := upperAscii name
+    let args := match args0.getLast? with
+      | some (.fn t _ _ [_] _) => if t == filterTag then args0.dropLast else args0
+      | _ => args0
+    isAggName n args.length star && (n != "MIN" && n != "MAX" || args.length == 1)
+  | _ => false
+
+/-- An aggregate other than count(), min() and max() (select.c SF_OrderByReqd: one that may read its rows' order). -/
+def isOrderedAgg (e : Expr) : Bool :=
+  isAggCall e && match e with
+    | .fn name _ _ _ _ => !["COUNT", "MIN", "MAX"].contains (upperAscii name)
+    | _ => false
+
+def isWindowCall : Expr → Bool
+  | .window .. => true
+  | _ => false
+
+/-- A function call or a subquery (select.c SF_ComplexResult: EP_HasFunc or EP_Subquery). -/
+def isComplex : Expr → Bool
+  | .fn .. | .window .. | .matches .. | .subquery _ | .exists .. | .inSelect .. => true
+  | _ => false
+
+def colsAny (p : Expr → Bool) (cols : List ResultCol) : Bool :=
+  cols.any fun c => match c with
+    | .expr e _ _ => exprAny p e 64
+    | _ => false
+
+def termsAny (p : Expr → Bool) (terms : List OrderTerm) : Bool :=
+  terms.any fun (.mk e _ _) => exprAny p e 64
+
+/-- What select.c flattenSubquery reads of the SELECT a FROM item belongs to: aggregate, DISTINCT, a window, a result
+column with a function or subquery, an aggregate that may read order, its FROM item count (once merged ones are
+counted), a WHERE (ON terms are WHERE terms to sqlite), ORDER BY (each term a number or a name: (18)), LIMIT, whether
+it is an arm of a compound, may not become one (the recursive part of a WITH table: (23)), has a RIGHT or FULL JOIN, or
+has an ORDER BY or LIMIT from an item read in place (which a UNION ALL read in place would have to carry). -/
+structure Shape where
+  agg : Bool := false
+  distinct : Bool := false
+  win : Bool := false
+  complex : Bool := false
+  orderReqd : Bool := false
+  nsrc : Nat := 0
+  hasWhere : Bool := false
+  hasOrder : Bool := false
+  orderCols : Bool := true
+  hasLimit : Bool := false
+  compound : Bool := false
+  noCompound : Bool := false
+  hasRight : Bool := false
+  handed : Bool := false
+
+/-- One arm of a subquery as flattenSubquery's conditions read it (none: a VALUES, or no FROM clause). -/
+structure CoreFacts where
+  distinct : Bool
+  agg : Bool
+  win : Bool
+  right : Bool
+  nitems : Nat
+  /-- a WHERE or an ON/USING term -/
+  hasWhere : Bool
+  /-- its only FROM item, when it has no joins -/
+  only : Option FromItem
+
+def coreFacts (orderBy : List OrderTerm) : Core → Option CoreFacts
+  | .values _ => none
+  | .select _ _ none _ _ _ _ => none
+  | .select d cols (some f) js w g h =>
+    some { distinct := d, agg := !g.isEmpty || h.isSome || colsAny isAggCall cols || termsAny isAggCall orderBy,
+           win := colsAny isWindowCall cols || termsAny isWindowCall orderBy,
+           right := js.any fun (.mk k _ _ _) => k == .right || k == .full,
+           nitems := 1 + js.length,
+           hasWhere := w.isSome || js.any fun (.mk _ _ on u) => on.isSome || !u.isEmpty,
+           only := if js.isEmpty then some f else none }
+
+/-- A FROM item that may be read in place: its SELECT, the environment its WITH and FROM clauses compile in, how many
+empty scopes stand for the levels between its definition and this FROM clause (a WITH table read from a deeper SELECT,
+or a view, which sees none), the column names it is read under (a WITH table's or view's column list), its name, and
+the WITH table it is (whose read is counted), or the view. -/
+structure FlatSrc where
+  q : Select
+  env : CEnv
+  pad : Nat := 0
+  names : Option (Array String) := none
+  alias : String
+  cte : Option Nat := none
+  /-- the view it is (its errors point nowhere in the statement's text) -/
+  view : Option String := none
+
+def bumpRead (reads : Array Nat) (id : Nat) : Array Nat :=
+  (if reads.size ≤ id then reads ++ Array.replicate (id + 1 - reads.size) 0 else reads).modify id (· + 1)
+
+/-- whether a FROM item names a rowid table (not a WITH table of `ctes` or `env`, nor a view) -/
+def rowidTable (env : CEnv) (ctes : List Cte) : Option FromItem → Bool
+  | some (.table qname _) =>
+    let name := (Schema.splitQual qname).2
+    !(ctes.any fun (Cte.mk n _ _ _) => nameEq n name) && !(env.ctes.any (nameEq ·.name name)) &&
+      match env.schema.table? qname with
+      | some t => !t.withoutRowid
+      | none => false
+  | _ => false
+
+/-- A FROM item that a SELECT may read in place: a subquery, a view, or a WITH table that is not recursive or
+MATERIALIZED. -/
+def flatSrc (env : CEnv) : FromItem → Option FlatSrc
+  | .subquery q alias => some { q, env, alias := alias.getD "" }
+  | .table qname alias =>
+    let name := (Schema.splitQual qname).2
+    match env.ctes.findIdx? (nameEq ·.name name) with
+    | some idx => (env.ctes[idx]?).bind fun c => c.body.map fun q =>
+        let δ := env.scopes.length - c.nscopes
+        { q, env := { env with ctes := env.ctes.drop (idx + 1), scopes := List.replicate δ {} ++ env.scopes.drop δ, aliases := [] },
+          pad := δ, names := some c.cols, alias := alias.getD name, cte := some c.id }
+    | none => (env.schema.view? qname).map fun v =>
+        { q := v.q, env := { env with scopes := [], aliases := [] }, pad := env.scopes.length,
+          names := if v.cols.isEmpty then none else some v.cols.toArray, alias := alias.getD name, view := some v.name }
+  | _ => none
+
+/-- One arm of a UNION ALL read in place: its number, and the compound's column names, affinities and collations. -/
+abbrev Arm := Nat × Array String × Array Aff × Array (Option (Collation × Bool))
+
+/-- What a merge hands the SELECT it is merged into: the shape after it, the WHERE conjuncts of the items read in place
+(by the index of the source they belong to: ON terms when it is a LEFT JOIN's), an ORDER BY (its keys and directions)
+and a LIMIT, their own WITH tables (with MATERIALIZED as written), and, when a UNION ALL subquery is to be read in place,
+its arm count and its column names, affinities and collations; the arms chosen for the UNION ALLs read in place
+after these items. -/
+structure FlatOut where
+  shape : Shape := {}
+  conds : Array (Nat × CExpr) := #[]
+  order : Option (Array CExpr × Array (Bool × Bool × Collation)) := none
+  limit : Option CExpr := none
+  ctes : Array (CCte × Option Bool) := #[]
+  fork : Option (Nat × Array String × Array Aff × Array (Option (Collation × Bool))) := none
+  arms : List Arm := []
+  deriving Inhabited
+
+/-- A FROM item as compileFrom reads it: its join, the item, ON, USING. -/
+abbrev FromIn := JoinKind × FromItem × Option Expr × List String
+
+/-- How flattenSubquery reads a FROM item: not in place, in place (dropping its ORDER BY when tag-select-0230 omits it),
+or, a UNION ALL, once per arm (its arm count, column names, affinities, collations). -/
+inductive FlatPlan where
+  | no
+  | simple (dropOrder : Bool)
+  | compound (n : Nat) (names : Array String) (affs : Array Aff) (colls : Array (Option (Collation × Bool)))
+
+def CSource.base : CSource → Nat
+  | .table _ _ _ _ _ base .. | .sub _ _ base .. | .cte _ _ base .. | .tvf _ _ _ base .. => base
+
+/-- The source with a LEFT JOIN's missing row: NULLs when no row matches. -/
+def CSource.setLeft : CSource → CSource
+  | .table root n ipk rc dv base acc _ right layout on => .table root n ipk rc dv base acc true right layout on
+  | .sub q n base _ right on keys => .sub q n base true right on keys
+  | .cte id n base _ right on keys => .cte id n base true right on keys
+  | .tvf f args n base _ right on => .tvf f args n base true right on
+
+/-- A core that reads the rows of `cores` (UNION ALL) as a subquery: a UNION ALL read in place after UNION, INTERSECT or
+EXCEPT stays one arm. -/
+def passThrough (cores : Array CCore) (n : Nat) (rcolls : Array Collation) : CCore :=
+  .select #[.sub (.mk #[] cores (Array.replicate (cores.size - 1) .unionAll) #[] none none n) n 0 false false #[] #[]] #[]
+    #[#[]] #[] #[] none ((List.range n).toArray.map (.col 0 ·)) rcolls #[] #[] false false n #[]
+
 mutual
 def compileExpr (env : CEnv) : Expr → Nat → CM Typed
   | _, 0 => throwC "expression nested too deeply"
@@ -550,7 +754,9 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
   | .lit v => return (.lit v, .none, none)
   | .col tbl name _ pos => do
     match ← liftM (resolve env.scopes tbl name pos) with
-    | some (d, s, a, c) =>
+    | some (d, .ref si i, a, c) => return (← compileFlatCol env (.ref si i) d (env.scopes.drop (d + 1)) fuel, a, some (c, false))
+    | some (_, .expr _, a, c) => return (.lit .null, a, some (c, false))
+    | some (d, .slot s, a, c) =>
       modify fun st => { st with outer := max st.outer d }
       let isJsonValue := ((env.scopes.drop d).head?.map fun sc => sc.srcs.any fun si => si.jsonEach && si.base + 1 == s).getD false
       if isJsonValue then return (.fn jsonValueTag #[.col d s, .col d (s + 1)], a, some (c, false))
@@ -735,6 +941,7 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     if cq.ncols != 1 then throwC s!"sub-select returns {cq.ncols} columns - expected 1"
     return (.scalar (oneRow cq) corr, affs.getD 0 .none, (colls.getD 0 none))
   | .param t => throwC s!"lean-sqlite: parameters are not supported: {t}"
+termination_by structural _ fuel => fuel
 
 def compileList (env : CEnv) : List Expr → Nat → CM (Array Typed)
   | [], _ => return #[]
@@ -743,6 +950,7 @@ def compileList (env : CEnv) : List Expr → Nat → CM (Array Typed)
     let c ← compileExpr env e fuel
     let cs ← compileList env rest fuel
     return #[c] ++ cs
+termination_by structural _ fuel => fuel
 
 def compilePairs (env : CEnv) : List (Expr × Expr) → Nat → CM (Array (CExpr × CExpr))
   | [], _ => return #[]
@@ -752,6 +960,7 @@ def compilePairs (env : CEnv) : List (Expr × Expr) → Nat → CM (Array (CExpr
     let (cb, _, _) ← compileExpr env b fuel
     let cs ← compilePairs env rest fuel
     return #[(ca, cb)] ++ cs
+termination_by structural _ fuel => fuel
 
 /-- A subquery: compiled with its own aggregates, and whether it reads the enclosing rows. `inFrom`: a FROM item of the
 enclosing SELECT, whose own scope its `env` lacks (so its depth `d` is the enclosing SELECT's depth `d`, not `d - 1`). -/
@@ -765,23 +974,47 @@ def compileSub (env : CEnv) (q : Select) (inFrom : Bool) : Nat → CM (CSel × A
     set { st2 with aggs := st.aggs, allowAgg := st.allowAgg, wins := st.wins, allowWin := st.allowWin,
                    outer := max st.outer (st2.outer - (if inFrom then 0 else 1)) }
     return (cq, names, affs, colls, st2.outer ≥ 1)
+termination_by structural fuel => fuel
 
 /-- A SELECT: its WITH tables, cores, ORDER BY and LIMIT; also its column names, affinities and collations. -/
 def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × Array Aff × Array (Option (Collation × Bool)))
   | _, 0 => throwC "query nested too deeply"
-  | .mk recursive ctes first rest orderBy limit offset, fuel+1 => do
+  | q, fuel+1 => compileSelectIn env false q fuel
+termination_by structural _ fuel => fuel
+
+/-- compileSelect; `recursive`: the SELECT of a recursive WITH table, whose cores read no UNION ALL in place. -/
+def compileSelectIn (env : CEnv) (recursive : Bool) : Select → Nat →
+    CM (CSel × Array String × Array Aff × Array (Option (Collation × Bool)))
+  | _, 0 => throwC "query nested too deeply"
+  | .mk rec ctes first rest orderBy limit offset, fuel+1 => do
     -- WITH tables, each visible to the later ones (and a recursive one to itself)
-    let (env, cctes) ← compileCtes env recursive ctes fuel
-    let single := rest.isEmpty
-    let (c0, names, affs, colls) ← compileCore env first (if single then some orderBy else none) fuel
-    let mut cores := #[c0]
-    let mut ops := #[]
+    let (env, cctes) ← compileCtes env rec ctes fuel
+    let lim := limit.isSome
+    let st0 ← get
+    let r0 ← compileCore env first (if rest.isEmpty then some orderBy else none) (!rest.isEmpty) lim recursive fuel
+    -- a SELECT read as a UNION ALL takes a compound's ORDER BY, which names result columns (flattenSubquery (18))
+    let (cs0, names, affs, colls, fo0) ← if rest.isEmpty && r0.1.size > 1
+        && !orderBy.all (fun (.mk e _ _) => (orderTermColumn e r0.2.1).isSome) then do
+        set st0
+        compileCore env first (some orderBy) false lim true fuel
+      else pure r0
+    let rcolls := colls.map fun k => (k.map (·.1)).getD .binary
+    let mut cores := cs0
+    let mut ops : Array CompoundOp := Array.replicate (cs0.size - 1) .unionAll
+    let mut hoisted := fo0.ctes
     for (op, core) in rest do
-      let (c, ns, _, _) ← compileCore env core none fuel
+      let (cs, ns, _, _, fo) ← compileCore env core none true lim recursive fuel
       if ns.size != names.size then
         throwC s!"SELECTs to the left and right of {opName op} do not have the same number of result columns"
-      cores := cores.push c
-      ops := ops.push op
+      hoisted := hoisted ++ fo.ctes
+      -- an arm read as a UNION ALL: its cores, unless another operator would take only the first of them
+      if cs.size > 1 && op != .unionAll then
+        cores := cores.push (passThrough cs ns.size rcolls)
+        ops := ops.push op
+      else
+        cores := cores ++ cs
+        ops := ops.push op ++ Array.replicate (cs.size - 1) .unionAll
+    let single := cores.size == 1
     -- a compound's ORDER BY names result columns
     if !single && !orderBy.isEmpty then
       let mut ks : Array Nat := #[]
@@ -797,8 +1030,8 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
         | .values rows _ => .values rows ks
     cores := cores.map (minMaxJoin ∘ minMaxCore env.schema)
     let dirs := orderBy.toArray.map fun (t : OrderTerm) => dirOf t names colls
-    -- a plain column's collation for ORDER BY in a simple select
-    let dirs := if single then dirs.mapIdx fun i d =>
+    -- a plain column's collation for ORDER BY in a simple select; with none, a subquery read in place may give one
+    let dirs := if !single then dirs else if orderBy.isEmpty then ((fo0.order.map (·.2)).getD #[]) else dirs.mapIdx fun i d =>
         let (desc, nf, coll) := d
         match orderBy[i]? with
         | some (.mk e _ _) => if (orderTermColl e).isSome then d else
@@ -806,7 +1039,6 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
           | some c => (desc, nf, c)
           | none => (desc, nf, coll)
         | none => d
-      else dirs
     -- a simple SELECT whose first FROM item's access path gives the ORDER BY needs no sort
     let (cores', dirs) := match cores[0]?, single with
       | some (.select srcs pre f g gc h cols rc order aggs false false w #[]), true =>
@@ -830,15 +1062,17 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
     cores := cores'
     let cl ← match limit with
       | some e => do let r ← compileExpr { env with scopes := env.scopes } e fuel; pure (some r.1)
-      | none => pure none
+      | none => pure (if single then fo0.limit else none)
     let co ← match offset with
       | some e => do let r ← compileExpr env e fuel; pure (some r.1)
       | none => pure none
     -- a WITH table more than one FROM item reads is computed once, unless NOT MATERIALIZED
     let reads := (← get).cteReads
-    let cctes := (cctes.zip ctes.toArray).map fun (CCte.mk id q r m, Cte.mk _ _ _ written) =>
+    let own : Array (CCte × Option Bool) := (cctes.zip ctes.toArray).map fun (c, Cte.mk _ _ _ written) => (c, written)
+    let cctes := (own ++ hoisted).map fun (CCte.mk id q r m, written) =>
       CCte.mk id q r (m || (written != some false && reads.getD id 0 ≥ 2))
     return (.mk cctes cores ops dirs cl co names.size, names, affs, colls)
+termination_by structural _ fuel => fuel
 
 def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv × Array CCte)
   | [], _ => return (env, #[])
@@ -859,21 +1093,26 @@ def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv 
         let info : CteInfo := { name, id, cols := ns, affs := affs.map fun _ => .none }
         let env2 := { env with ctes := { info with queue := true } :: env.ctes }
         if rest2.length != 1 then throwC s!"lean-sqlite: recursive table {name} must be one SELECT UNION [ALL] one SELECT"
-        let (cq, _, _, _) ← compileSelect env2 q fuel
+        let (cq, _, _, _) ← compileSelectIn env2 true q fuel
         pure (cq, info)
       else do
         let (cq, ns, affs, _) ← compileSelect env q fuel
         if !cols.isEmpty && cols.length != ns.size then
           throwC s!"table {name} has {ns.size} values for {cols.length} columns"
         let ns := if cols.isEmpty then ns else cols.toArray
-        pure (cq, { name, id, cols := ns, affs : CteInfo })
+        let body := if materialized == some true then none else some q
+        pure (cq, { name, id, cols := ns, affs, body, nscopes := env.scopes.length : CteInfo })
     let env := { env with ctes := info :: env.ctes }
     let (env, more) ← compileCtes env recursive rest fuel
     return (env, #[.mk id cq selfRef (materialized == some true)] ++ more)
+termination_by structural _ fuel => fuel
 
-/-- One core: FROM, WHERE, GROUP BY, HAVING and the result columns (and, for a simple SELECT, ORDER BY). -/
-def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
-    Nat → CM (CCore × Array String × Array Aff × Array (Option (Collation × Bool)))
+/-- One core: FROM, WHERE, GROUP BY, HAVING and the result columns (and, for a simple SELECT, ORDER BY). `arm`: it is
+an arm of a compound; `limited`: its SELECT has a LIMIT; `recursive`: it is part of a recursive WITH table's
+SELECT. A UNION ALL subquery read in place makes it several cores, one per arm, joined by UNION ALL; the last result is
+what the subqueries read in place hand its SELECT (an ORDER BY, a LIMIT, their WITH tables). -/
+def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) (arm limited recursive : Bool) :
+    Nat → CM (Array CCore × Array String × Array Aff × Array (Option (Collation × Bool)) × FlatOut)
   | 0 => throwC "query nested too deeply"
   | fuel+1 => match core with
   | .values rows => do
@@ -891,15 +1130,55 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
         | some k => pure k
         | none => throwC "1st ORDER BY term does not match any column in the result set"
       | none => pure #[]
-    return (.values crows order, names, affs, names.map fun _ => none)
+    return (#[.values crows order], names, affs, names.map fun _ => none, {})
   | .select distinct cols fromItem joins whereE groupBy having => do
+    let items : Array FromIn := ((match fromItem with | some f => [(JoinKind.inner, f, none, [])] | none => [])
+      ++ joins.map fun (.mk k it on u) => (k, it, on, u)).toArray
+    let terms := orderBy.getD []
+    let shape : Shape := {
+      agg := !groupBy.isEmpty || colsAny isAggCall cols || having.any (exprAny isAggCall · 64) || termsAny isAggCall terms
+      distinct, win := colsAny isWindowCall cols || termsAny isWindowCall terms, complex := colsAny isComplex cols
+      orderReqd := colsAny isOrderedAgg cols || having.any (exprAny isOrderedAgg · 64) || termsAny isOrderedAgg terms
+      nsrc := items.size
+      hasWhere := whereE.isSome || joins.any fun (.mk _ _ on u) => on.isSome || !u.isEmpty
+      hasOrder := !terms.isEmpty
+      orderCols := terms.all fun (.mk e _ _) => match stripCollate e with | .lit (.int _) | .col none _ _ _ => true | _ => false
+      hasLimit := limited, compound := arm, noCompound := recursive
+      hasRight := joins.any fun (.mk k _ _ _) => k == .right || k == .full }
+    compileSelectCore env distinct cols whereE groupBy having orderBy shape [] items fuel
+termination_by structural fuel => fuel
+
+/-- A SELECT core over its FROM items (compileCore). When one of them is a UNION ALL subquery read in place, the core is
+compiled once for each of its arms (select.c flattenSubquery's compound-subquery flattening); `arms`: the arms
+chosen so far, in the order the FROM items read in place meet them. -/
+def compileSelectCore (env : CEnv) (distinct : Bool) (cols : List ResultCol) (whereE : Option Expr) (groupBy : List Expr)
+    (having : Option Expr) (orderBy : Option (List OrderTerm)) (shape : Shape) (arms : List Arm) (items : Array FromIn) :
+    Nat → CM (Array CCore × Array String × Array Aff × Array (Option (Collation × Bool)) × FlatOut)
+  | 0 => throwC "query nested too deeply"
+  | fuel+1 => do
+    let st0 ← get
     -- the FROM items and their slots
-    let items := (match fromItem with | some f => [(JoinKind.inner, f, (none : Option Expr), ([] : List String))] | none => [])
-      ++ joins.map fun (.mk k it on u) => (k, it, on, u)
-    let (srcs, infos, onConds, _) ← compileFrom env items fuel
+    let (srcs, infos, onConds, width, fo) ← compileFrom env shape 0 0 none arms items fuel
+    if let some (n, ns, as, cs) := fo.fork then
+      set st0
+      let mut cores := #[]
+      let mut first : Option (Array String × Array Aff × Array (Option (Collation × Bool))) := none
+      let mut ctes := #[]
+      let mut reads : Option (Array Nat) := none
+      for k in [0:n] do
+        let (cs', names, affs, colls, x) ← compileSelectCore env distinct cols whereE groupBy having orderBy
+          { shape with compound := true } (arms ++ [(k, ns, as, cs)]) items fuel
+        -- (the copies read a WITH table as the one FROM item they copy)
+        match reads with
+        | some r => modify fun st => { st with cteReads := r }
+        | none => reads := some (← get).cteReads
+        cores := cores ++ cs'
+        ctes := ctes ++ x.ctes
+        if first.isNone then first := some (names, affs, colls)
+      let (names, affs, colls) := first.getD (#[], #[], #[])
+      return (cores, names, affs, colls, { ctes })
     let scope : Scope := { srcs := infos }
     let env' := { env with scopes := scope :: env.scopes }
-    let width := infos.foldl (fun w s => max w (s.base + s.slots)) 0
     -- result columns
     let st ← get
     set { st with allowAgg := true, aggs := #[], allowWin := true, wins := #[] }
@@ -914,14 +1193,16 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
         for s in infos do
           for i in [0:s.cols.size] do
             unless s.hidden.getD i false do
-              ccols := ccols.push (.col 0 (s.base + i)); names := names.push (s.cols.getD i "")
+              ccols := ccols.push (← if s.flat.isEmpty then pure (.col 0 (s.base + i)) else compileFlatCol env (.ref s i) 0 env.scopes fuel)
+              names := names.push (s.cols.getD i "")
               affs := affs.push (s.affs.getD i .none); colls := colls.push (some (s.colls.getD i .binary, false))
       | .tableStar t =>
         match infos.find? (nameEq ·.name t) with
         | none => throwC s!"no such table: {t}"
         | some s =>
           for i in [0:s.cols.size] do
-            ccols := ccols.push (.col 0 (s.base + i)); names := names.push (s.cols.getD i "")
+            ccols := ccols.push (← if s.flat.isEmpty then pure (.col 0 (s.base + i)) else compileFlatCol env (.ref s i) 0 env.scopes fuel)
+            names := names.push (s.cols.getD i "")
             affs := affs.push (s.affs.getD i .none); colls := colls.push (some (s.colls.getD i .binary, false))
       | .expr e alias span =>
         let (ce, a, k) ← compileExpr env' e fuel
@@ -956,10 +1237,11 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     let chaving ← match having with
       | some h => do let r ← compileExpr env' h fuel; pure (some r.1)
       | none => pure none
-    -- ORDER BY of a simple SELECT: a number or an alias names a result column, else an expression over the FROM items
+    -- ORDER BY of a simple SELECT: a number or an alias names a result column, else an expression over the FROM items;
+    -- with none, a subquery read in place may hand it its own
     modify fun st => { st with allowWin := true }
     let corder ← match orderBy with
-      | none => pure #[]
+      | none | some [] => pure ((fo.order.map (·.1)).getD #[])
       | some terms => do
         let mut out := #[]
         let mut i := 0
@@ -984,12 +1266,13 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
     if !aggs.isEmpty && infos.isEmpty && false then throwC ""
     let isAgg := !aggs.isEmpty || !cgroup.isEmpty
     -- where each condition is checked, and how each table is read
-    let bases := infos.map (·.base)
+    let bases := srcs.map (·.base)
     if (srcs.filter isRightOuter).size > 1 then throwC "lean-sqlite: only one RIGHT or FULL JOIN per SELECT is supported"
-    let allConds := whereConds.map (fun (t : Typed) => t.1) ++ onConds.filterMap fun (j, c) =>
-      if isOuter (srcs.getD j default) then none else some c
+    -- (the WHERE of a subquery read in place comes first, as flattenSubquery puts it)
+    let inner (jc : Nat × CExpr) : Option CExpr := if isOuter (srcs.getD jc.1 default) then none else some jc.2
+    let allConds := fo.conds.filterMap inner ++ whereConds.map (fun (t : Typed) => t.1) ++ onConds.filterMap inner
     let leftOn : Array (Array CExpr) := (List.range srcs.size).toArray.map fun j =>
-      (onConds.filter fun (k, _) => k == j).map (·.2) |>.filter fun _ => isOuter (srcs.getD j default)
+      ((fo.conds ++ onConds).filter fun (k, _) => k == j).map (·.2) |>.filter fun _ => isOuter (srcs.getD j default)
     let level (c : CExpr) : Option Nat :=
       let (ss, corr) := slotsOf c 64
       if corr then some (srcs.size - 1) else
@@ -1027,23 +1310,18 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
       | .cte id n base left false on _ => .cte id n base left false on (keys base n none left on)
       | s => s
     let rcolls := colls.map fun k => (k.map (·.1)).getD .binary
-    return (.select srcs pre filters cgroup gcolls chaving ccols rcolls corder aggs isAgg distinct width wins, names, affs, colls)
+    return (#[.select srcs pre filters cgroup gcolls chaving ccols rcolls corder aggs isAgg distinct width wins], names, affs, colls,
+      { order := match orderBy with | none | some [] => fo.order | _ => none, limit := fo.limit, ctes := fo.ctes })
+termination_by structural fuel => fuel
 
-/-- The FROM items: sources, their scope entries, and the ON conditions (with the item each belongs to). -/
-def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List String) → Nat →
-    CM (Array CSource × Array SrcInfo × Array (Nat × CExpr) × Nat)
-  | [], _ => return (#[], #[], #[], 0)
-  | _, 0 => throwC "query nested too deeply"
-  | items, fuel+1 => do
-    let mut srcs : Array CSource := #[]
-    let mut infos : Array SrcInfo := #[]
-    let mut ons : Array (Nat × CExpr) := #[]
-    let mut slot := 0
-    for (kind, item, on, usingCols) in items do
-      let left := kind == .left || kind == .full
-      let right := kind == .right || kind == .full
-      let j := srcs.size
-      let (src, info) ← match item with
+
+/-- A FROM item read as a source: a table, view, WITH table, subquery or table-valued function at slot `slot`
+(`infos`: the earlier items, whose columns a table-valued function's arguments may name). -/
+def compileItem (env : CEnv) (infos : Array SrcInfo) (item : FromItem) (slot : Nat) (left right : Bool) :
+    Nat → CM (CSource × SrcInfo)
+  | 0 => throwC "query nested too deeply"
+  | fuel+1 => do
+    match item with
         | .table qname alias =>
           let name := (Schema.splitQual qname).2
           let an := alias.getD name
@@ -1106,30 +1384,278 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           pure (CSource.sub cq ns.size slot left right #[] #[],
             { name := alias.getD "", cols := ns, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary, base := slot,
               rowid := none, hidden := ns.map fun _ => false : SrcInfo })
-      let info := info
+termination_by structural fuel => fuel
+
+/-- The FROM items: sources (from slot `slot0`, numbered from `j0`), their scope entries, the ON conditions (with the
+source each belongs to), the slot after them, and what the items read in place hand the core. `shape`: the core as
+select.c flattenSubquery reads it; `after`: the join after these items (inside an item read in place). -/
+def compileFrom (env : CEnv) (shape : Shape) (slot0 j0 : Nat) (after : Option JoinKind) (arms : List Arm) : Array FromIn → Nat →
+    CM (Array CSource × Array SrcInfo × Array (Nat × CExpr) × Nat × FlatOut)
+  | _, 0 => throwC "query nested too deeply"
+  | items, fuel+1 => do
+    let mut srcs : Array CSource := #[]
+    let mut infos : Array SrcInfo := #[]
+    let mut ons : Array (Nat × CExpr) := #[]
+    let mut slot := slot0
+    let mut fo : FlatOut := { shape }
+    let mut arms := arms
+    for ((kind, item, on, usingCols), idx) in items.zipIdx do
+      let left := kind == .left || kind == .full
+      let right := kind == .right || kind == .full
+      let j := j0 + srcs.size
+      let next := (items[idx + 1]?.map (·.1)) <|> after
+      -- read in place (select.c flattenSubquery): whole, or one arm of a UNION ALL; else a source
+      let fsrc := flatSrc env item
+      let mut plan : Option (Nat × Option (Array String × Array Aff × Array (Option (Collation × Bool))) × Bool) := none
+      if let some fs := fsrc then
+        let inView (e : CErr) : CErr := if fs.view.isSome then { e with pos := none } else e
+        match ← (try flatPlan fs fo.shape j kind next fuel catch e => throw (inView e)) with
+        | .no => pure ()
+        | .simple drop => plan := some (0, none, drop)
+        | .compound n ns as cs => match arms with
+          | (k, ns', as', cs') :: more =>
+            arms := more
+            plan := some (k, some (ns', as', cs'), false)
+          | [] => return (srcs, infos, ons, slot, { fo with fork := some (n, ns, as, cs) })
+      let mut info : SrcInfo := default
+      let mut src : Option CSource := none
+      match plan, fsrc with
+      | some (k, comp, drop), some fs =>
+        if let some id := fs.cte then modify fun st => { st with cteReads := bumpRead st.cteReads id }
+        let (isrcs, ions, islot, inf, x) ← try compileFlat fs k comp left drop fo.shape slot j next arms fuel
+          catch e => throw (if fs.view.isSome then { e with pos := none } else e)
+        if x.fork.isSome then return (srcs, infos, ons, slot, { fo with fork := x.fork })
+        arms := x.arms
+        srcs := srcs ++ isrcs
+        ons := ons ++ ions
+        slot := islot
+        info := inf
+        fo := { fo with
+          shape := x.shape, conds := x.conds ++ fo.conds
+          order := fo.order <|> x.order, limit := fo.limit <|> x.limit, ctes := fo.ctes ++ x.ctes }
+      | _, _ =>
+        let (s, inf) ← compileItem env infos item slot left right fuel
+        src := some s
+        info := inf
       -- USING: an equality with the column of an earlier item; the later column is merged away
-      let mut info := info
       -- NATURAL: the columns this item shares with the earlier ones
       let usingCols := if usingCols == ["*"] then
           info.cols.toList.filter fun c => infos.any fun s => s.cols.toList.zipIdx.any fun (n, i) => nameEq n c && !(s.hidden.getD i false)
         else usingCols
       for u in usingCols do
         let some ri := info.cols.findIdx? (nameEq · u) | throwC s!"cannot join using column {u} - column not present in both tables"
-        let some (li, l) := (infos.toList.zipIdx.findSome? fun (s, _) =>
-            (s.cols.findIdx? (nameEq · u)).bind fun ci => if s.hidden.getD ci false then none else some (s.base + ci, s))
+        let some (lc, l) := (infos.toList.zipIdx.findSome? fun (s, _) =>
+            (s.cols.findIdx? (nameEq · u)).bind fun ci => if s.hidden.getD ci false then none else some (ci, s))
           | throwC s!"cannot join using column {u} - column not present in both tables"
-        ons := ons.push (j, .cmp .eq (.col 0 li) (.col 0 (info.base + ri)) (cmpAff (l.affs.getD 0 .none) .none) (l.colls.getD 0 .binary))
+        let le ← if l.flat.isEmpty then pure (CExpr.col 0 (l.base + lc)) else compileFlatCol env (.ref l lc) 0 env.scopes fuel
+        let re ← if info.flat.isEmpty then pure (CExpr.col 0 (info.base + ri)) else compileFlatCol env (.ref info ri) 0 env.scopes fuel
+        ons := ons.push (j, .cmp .eq le re (cmpAff (l.affs.getD 0 .none) .none) (l.colls.getD 0 .binary))
         info := { info with hidden := info.hidden.setIfInBounds ri true }
       infos := infos.push info
-      srcs := srcs.push src
-      slot := slot + info.slots
+      if let some s := src then
+        srcs := srcs.push s
+        slot := slot + info.slots
       -- ON sees this item and the earlier ones
       if let some o := on then
         let env' := { env with scopes := { srcs := infos } :: env.scopes }
         -- (sqlite3 gives an error in an ON clause no offset)
         let cs ← try compileList env' (conjuncts o 64) fuel catch e => throw { e with pos := none }
         ons := ons ++ cs.map fun (c, _, _) => (j, c)
-    return (srcs, infos, ons, slot)
+    return (srcs, infos, ons, slot, { fo with arms })
+termination_by structural _ fuel => fuel
+
+/-- Whether FROM item `j` (joined by `kind`, followed by `next`) of a core shaped `shape` reads `fs` in place: select.c
+flattenSubquery's conditions (numbered as there) and its caller's in sqlite3Select. -/
+def flatPlan (fs : FlatSrc) (shape : Shape) (j : Nat) (kind : JoinKind) (next : Option JoinKind) : Nat → CM FlatPlan
+  | 0 => pure .no
+  | fuel+1 => do
+    let .mk rec ctes first rest orderBy limit offset := fs.q
+    let arms := first :: rest.map (·.2)
+    -- (7), (17c): each arm has a FROM clause
+    let some facts := arms.mapM (coreFacts orderBy) | return .no
+    let some f0 := facts.head? | return .no
+    let lim := limit.isSome
+    let outerJ := kind == .left || kind == .right || kind == .full
+    -- tag-select-0230: an ORDER BY that changes nothing is dropped first
+    let drop := !orderBy.isEmpty && (shape.hasOrder || shape.nsrc > 1) && !lim && !shape.orderReqd
+    let order := !orderBy.isEmpty && !drop
+    let isOuterKind (k : JoinKind) : Bool := k == .left || k == .right || k == .full
+    if offset.isSome                                                     -- (14)
+      || shape.win || facts.any (·.win)                                  -- (25)
+      || facts.any (·.agg)                                               -- an aggregate subquery
+      || lim && (shape.hasLimit || shape.compound || shape.nsrc > 1 || shape.agg || shape.hasWhere || shape.distinct)
+                                                                         -- (13) (15) (8) (9) (19) (21)
+      || f0.distinct                                                     -- (4)
+      || order && (shape.hasOrder || shape.agg || shape.compound)        -- (11) (16); an arm sorts nothing
+      || order && j == 0 && shape.complex && (shape.nsrc == 1 || next.any isOuterKind)  -- a complex result
+      || facts.any (·.right) && j > 0                                    -- (27a)
+      || shape.hasRight                                                  -- (one RIGHT JOIN per SELECT here)
+      || outerJ && (kind != .left || f0.nitems > 1 || shape.distinct || !rest.isEmpty || order
+                    || !rowidTable fs.env ctes f0.only)                  -- (26) (3a) (3d) (17f)
+      || !ctes.isEmpty && shape.noCompound then                          -- (a recursive SELECT has no WITH tables)
+      return .no
+    if rest.isEmpty then return .simple drop
+    -- (17a) (17b) (17d) (18) (20) (23); a UNION ALL with a LIMIT stays a subquery
+    if order || shape.agg || shape.distinct || facts.any (·.distinct) || !rest.all (·.1 == .unionAll)
+      || shape.hasOrder && !shape.orderCols || shape.noCompound || shape.handed || lim then
+      return .no
+    -- (17h): each arm's columns have the first arm's affinities
+    let st0 ← get
+    let (env2, _) ← compileCtes fs.env rec ctes fuel
+    let mut res := #[]
+    for a in arms do
+      let (_, ns, affs, colls, _) ← compileCore env2 a none true false false fuel
+      res := res.push (ns, affs, colls)
+    set st0
+    let some (ns, affs0, colls) := res[0]? | return .no
+    if res.any (fun (_, a, _) => a != affs0) then return .no
+    return .compound arms.length ns affs0 colls
+termination_by structural fuel => fuel
+
+/-- A FROM item read in place (select.c flattenSubquery): arm `k` of `fs.q` (read under the compound's names,
+affinities and collations `comp`, for an arm of a UNION ALL) compiled into the reading core's frame from slot `slot`, its
+sources numbered from `j`; `next`: the join after it. `left`: it is a LEFT JOIN's right side; `drop`: its ORDER BY is
+dropped (tag-select-0230). Its own FROM items are tried in place in turn, `shape` being the reading core with this
+item merged. Returns its sources, their ON conditions, the slot after them, the scope entry that stands for it, and
+what it hands the reading core. -/
+def compileFlat (fs : FlatSrc) (k : Nat) (comp : Option (Array String × Array Aff × Array (Option (Collation × Bool))))
+    (left drop : Bool) (shape : Shape) (slot j : Nat) (next : Option JoinKind) (arms : List Arm) :
+    Nat → CM (Array CSource × Array (Nat × CExpr) × Nat × SrcInfo × FlatOut)
+  | 0 => throwC "query nested too deeply"
+  | fuel+1 => do
+    let .mk rec ctes first rest orderBy limit _ := fs.q
+    let core := if k == 0 then first else ((rest.drop (k - 1)).head?.map (·.2)).getD first
+    let .select _ cols fromItem joins whereE _ _ := core | throwC "lean-sqlite: a VALUES read in place"
+    let order := !orderBy.isEmpty && !drop && comp.isNone
+    let items : Array FromIn := ((match fromItem with | some f => [(JoinKind.inner, f, none, [])] | none => [])
+      ++ joins.map fun (.mk kd it on u) => (kd, it, on, u)).toArray
+    let shape := { shape with
+      nsrc := shape.nsrc + items.size - 1
+      hasWhere := shape.hasWhere || whereE.isSome || joins.any fun (.mk _ _ on u) => on.isSome || !u.isEmpty
+      hasOrder := shape.hasOrder || order
+      hasLimit := shape.hasLimit || limit.isSome
+      compound := shape.compound || comp.isSome
+      hasRight := shape.hasRight || joins.any fun (Join.mk kd _ _ _) => kd == JoinKind.right || kd == JoinKind.full
+      handed := shape.handed || order || limit.isSome }
+    let (envQ, cctes) ← compileCtes fs.env rec ctes fuel
+    let (isrcs, iinfos, ions, islot, x) ← compileFrom envQ shape slot j next arms items fuel
+    if x.fork.isSome then return (#[], #[], slot, default, x)
+    let isrcs := if left then isrcs.modify 0 CSource.setLeft else isrcs
+    let env' := { envQ with scopes := { srcs := iinfos } :: envQ.scopes }
+    -- result columns: compiled here once (errors, types, names), and again wherever the reading core names them
+    let mut flat : Array FlatCol := #[]
+    let mut ccols : Array CExpr := #[]
+    let mut names : Array String := #[]
+    let mut affs : Array Aff := #[]
+    let mut colls : Array (Option (Collation × Bool)) := #[]
+    for rc in cols do
+      match rc with
+      | .star =>
+        if iinfos.isEmpty then throwC "no tables specified"
+        for s in iinfos do
+          for i in [0:s.cols.size] do
+            unless s.hidden.getD i false do
+              let r : FlatCol := if s.flat.isEmpty then .slot (s.base + i) else .ref s i
+              flat := flat.push r
+              ccols := ccols.push (← compileFlatCol envQ r 0 envQ.scopes fuel)
+              names := names.push (s.cols.getD i "")
+              affs := affs.push (s.affs.getD i .none); colls := colls.push (some (s.colls.getD i .binary, false))
+      | .tableStar t =>
+        match iinfos.find? (nameEq ·.name t) with
+        | none => throwC s!"no such table: {t}"
+        | some s =>
+          for i in [0:s.cols.size] do
+            let r : FlatCol := if s.flat.isEmpty then .slot (s.base + i) else .ref s i
+            flat := flat.push r
+            ccols := ccols.push (← compileFlatCol envQ r 0 envQ.scopes fuel)
+            names := names.push (s.cols.getD i "")
+            affs := affs.push (s.affs.getD i .none); colls := colls.push (some (s.colls.getD i .binary, false))
+      | .expr e alias span =>
+        let (ce, a, kk) ← compileExpr env' e fuel
+        flat := flat.push (.expr e); ccols := ccols.push ce; affs := affs.push a; colls := colls.push kk
+        names := names.push (match alias with
+          | some n => n
+          | none => match e with
+            | .col tbl n _ _ => colName iinfos tbl n
+            | _ => span)
+    if let (some v, some ns) := (fs.view, fs.names) then
+      if ns.size != names.size then throwC s!"expected {ns.size} columns for '{v}' but got {names.size}"
+    if let some (ns, as, cs) := comp then
+      names := ns; affs := as; colls := cs
+    if let some ns := fs.names then names := ns
+    -- WHERE: ahead of the reading core's own (flattenSubquery puts pSub->pWhere first); a LEFT JOIN's ON terms
+    let aliasList := cols.filterMap fun | .expr e (some a) _ => some (a, e) | _ => none
+    let envA := { env' with aliases := aliasList }
+    let wconds ← compileList envA (match whereE with | some w => conjuncts w 64 | none => []) fuel
+    -- ORDER BY and LIMIT, handed to the reading SELECT
+    let ord ← if !order then pure none else do
+      let mut out := #[]
+      let mut i := 0
+      for .mk e _ _ in orderBy do
+        i := i + 1
+        let e0 := stripCollate e
+        match e0 with
+        | .lit (.int n) =>
+          if n < 1 || n.toNatClampNeg > ccols.size then
+            throwC s!"{ordinalName i} ORDER BY term out of range - should be between 1 and {ccols.size}"
+          out := out.push (ccols.getD (n.toNatClampNeg - 1) default)
+        | .col none n _ _ =>
+          match cols.findIdx? (fun | .expr _ (some a) _ => nameEq a n | _ => false) with
+          | some jj => out := out.push (ccols.getD jj default)
+          | none => let (c, _, _) ← compileExpr envA e0 fuel; out := out.push c
+        | _ => let (c, _, _) ← compileExpr envA e0 fuel; out := out.push c
+      let dirs := orderBy.toArray.map fun (t : OrderTerm) =>
+        let d := dirOf t names colls
+        match t with
+        | .mk e _ _ => if (orderTermColl e).isSome then d else match exprColl envQ core e with
+          | some c => (d.1, d.2.1, c)
+          | none => d
+      pure (some (out, dirs))
+    let lim ← match limit with
+      | some e => do let r ← compileExpr envQ e fuel; pure (some r.1)
+      | none => pure none
+    let nullRow := if !left then none else match isrcs[0]? with
+      | some (CSource.table _ n _ _ _ base _ _ _ layout _) => if layout.isEmpty then some (base + n) else none
+      | _ => none
+    let info : SrcInfo := {
+      name := fs.alias, cols := names, affs, colls := colls.map fun c => (c.map (·.1)).getD .binary,
+      base := slot, rowid := none, hidden := names.map fun _ => false, flat, inner := iinfos, flatCtes := envQ.ctes,
+      flatPad := fs.pad, flatNull := nullRow }
+    let hoisted := (cctes.zip ctes.toArray).map fun (c, Cte.mk _ _ _ m) => (c, m)
+    return (isrcs, ions, islot, info, { x with
+      conds := x.conds ++ wconds.map (fun (t : Typed) => (j, t.1)), order := ord <|> x.order, limit := lim <|> x.limit
+      ctes := hoisted ++ x.ctes })
+termination_by structural fuel => fuel
+
+/-- Column `r` of a FROM item read in place, named `d` levels in from the core that reads the item (`parents`: the
+scopes enclosing that core): its expression compiled there (select.c substExpr), so a column never named is never
+computed; on a LEFT JOIN's missing row NULL, unless it is a column of the item. -/
+def compileFlatCol (env : CEnv) (r : FlatCol) (d : Nat) (parents : List Scope) : Nat → CM CExpr
+  | 0 => throwC "expression nested too deeply"
+  | fuel+1 => match r with
+    | .slot s => do
+      modify fun st => { st with outer := max st.outer d }
+      pure (.col d s)
+    | .expr _ => pure (.lit .null)
+    | .ref si i => do
+      let outer := List.replicate si.flatPad {} ++ parents.drop si.flatPad
+      let e ← match si.flat[i]? with
+        | some (.expr x) => do
+          let reads := (← get).cteReads
+          let envX := { env with
+            scopes := List.replicate d {} ++ ({ srcs := si.inner } :: outer), ctes := si.flatCtes, aliases := [] }
+          let (ce, _, _) ← compileExpr envX x fuel
+          -- (its WITH tables were counted where it was compiled first)
+          modify fun st => { st with cteReads := reads }
+          pure ce
+        | some c => compileFlatCol env c d outer fuel
+        | none => pure (.lit .null)
+      let missing (row : Nat) : CExpr := .case none #[(.isNull (.col d row) false, .lit .null)] (some e) .none .binary
+      match si.flatNull, e with
+      | some row, .col d' _ => pure (if d' == d then e else missing row)
+      | some row, _ => pure (missing row)
+      | none, _ => pure e
+termination_by structural fuel => fuel
 end
 
 end LSql
