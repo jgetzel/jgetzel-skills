@@ -201,7 +201,7 @@ where
 
 /-- ORDER BY's order of two key values from whether each is NULL and `cmp`, their order when neither is: NULLs first
 or last apart from DESC, the others reversed for DESC. -/
-@[inline] def keyOrder (desc nullsFirst aNull bNull : Bool) (cmp : Unit → Ordering) : Ordering :=
+def keyOrder (desc nullsFirst aNull bNull : Bool) (cmp : Unit → Ordering) : Ordering :=
   match aNull, bNull with
   | true, true => .eq
   | true, false => if nullsFirst then .lt else .gt

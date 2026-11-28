@@ -158,8 +158,8 @@ def PIdx.of (s : Schema) (t : Table) (ix : Index) : PIdx :=
     | .error _ => none
   { toIndex := ix
     terms := if !ix.hasExprs then #[] else ix.cols.mapIdx fun i _ => (ix.exprs.getD i none).map fun e =>
-      (compiled {} e).getD ⟨fun _ => .ok .null⟩
-    holds := ix.pred.map fun w => (compiled s w).getD ⟨fun _ => .ok (.int 0)⟩ }
+      (compiled {} e).getD fun _ => .ok .null
+    holds := ix.pred.map fun w => (compiled s w).getD fun _ => .ok (.int 0) }
 
 /-- The indexes of table `t`, prepared. -/
 def prepIdxs (s : Schema) (t : Table) : Array PIdx := (s.indexesOfTable t).map (PIdx.of s t)
@@ -169,7 +169,7 @@ def keyVals (ix : PIdx) (row : Row) : Array Value :=
   if !ix.hasExprs then ix.cols.map (row.getD · .null) else
   ix.cols.mapIdx fun i c => match ix.terms.getD i none with
     | none => row.getD c .null
-    | some f => match f.run (({ pager := Pager.placeholder } : Env).push row) with
+    | some f => match f (({ pager := Pager.placeholder } : Env).push row) with
       | .ok v => v
       | .error _ => .null
 
@@ -242,7 +242,7 @@ def inIndex (ix : PIdx) (env : Env) (frame : Row) : Bool :=
   match ix.holds with
   | none => true
   | some f =>
-    match f.run (env.push frame) with
+    match f (env.push frame) with
     | .ok v => v.truth? == some true
     | .error _ => false
 
@@ -280,7 +280,7 @@ def checkRow (t : Table) (cks : Array (Except String CFn)) (frame : Row) : XS (O
   let mut i := 0
   for ck in cks do
     let f ← liftP ck
-    let v ← liftR (f.run ((← envX).push frame))
+    let v ← liftR (f ((← envX).push frame))
     if v.truth? == some false then return some s!"CHECK constraint failed: {(checkTexts t.sql).getD i t.name}"
     i := i + 1
   return none
@@ -1013,13 +1013,13 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
             | none => pure true
             | some w => do
               let cw ← liftP w
-              pure ((← liftR (cw.run env)).truth? == some true)
+              pure ((← liftR (cw env)).truth? == some true)
           if ok then
             let oldRowid := match old.getD t.cols.size .null with | .int k => k | _ => 0
             let mut nrow := old.extract 0 t.cols.size
             let mut nr := oldRowid
             for (c, e) in sets do
-              let v ← liftR ((← liftP e).run env)
+              let v ← liftR ((← liftP e) env)
               match t.colIndex? c with
               | some i =>
                 let v := Value.applyAff (t.cols.getD i default).aff v
@@ -1093,7 +1093,7 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
       let mut row := old.extract 0 n
       let mut nr := oldRowid
       for ((tgt, _), cf) in targets.zip cfs do
-        let v ← liftR (cf.run ((← envX).push old))
+        let v ← liftR (cf ((← envX).push old))
         match tgt with
         | some i =>
           let v := Value.applyAff (t.cols.getD i default).aff v
@@ -1129,7 +1129,7 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
     let mut row := old.extract 0 t.cols.size
     let mut nr := oldRowid
     for ((tgt, _), cf) in targets.zip cfs do
-      let v ← liftR (cf.run ((← envX).push old))
+      let v ← liftR (cf ((← envX).push old))
       match tgt with
       | some i =>
         let v := Value.applyAff (t.cols.getD i default).aff v
@@ -1342,7 +1342,7 @@ def exec1 (st : Stmt) : Nat → XS Result
     let rows ← modifyGet fun db => (db.returned.getD #[], { db with returned := none })
     let env ← envX
     let cfs := ces.map cfn
-    let out ← rows.mapM fun r => liftR (cfs.mapM fun cf => cf.run (env.push r))
+    let out ← rows.mapM fun r => liftR (cfs.mapM fun cf => cf (env.push r))
     return { names, rows := out }
   | .pragma n v => pragma n v
   | .vacuum | .reindex | .begin | .commit | .rollback | .savepoint _ | .release _ | .rollbackTo _ => return {}

@@ -624,7 +624,7 @@ loop over a cursor. -/
 def entryBound (p : Pager) : Nat := p.totalPages * (p.geo.usable / 4 + 1) + 1
 
 /-- Folds `f` over the rows of a table tree in rowid order: each leaf's keys and cells in turn. -/
-@[specialize] def foldTable (p : Pager) (root : Pgno) (init : β) (f : β → Int64 → ByteArray → β) : β :=
+def foldTable (p : Pager) (root : Pgno) (init : β) (f : β → Int64 → ByteArray → β) : β :=
   go root init maxDepth
 where
   go (pg : Pgno) (acc : β) : Nat → β
