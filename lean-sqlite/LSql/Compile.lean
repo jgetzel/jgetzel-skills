@@ -420,6 +420,60 @@ def orderedItem (schema : Schema) (alone : Bool) (src : CSource) (order : Array 
     | _, _ => none
   | _ => none
 
+/-- Whether conjunct `c` pins column slot `s` to one value under collation `coll` (sqlite's where.c: a term `col IS NULL`,
+`col = e` or `col IS e`, `e` reading no column of the item, makes an ORDER BY on the column hold on every row). -/
+def pinsCol (s : Nat) (coll : Collation) (c : CExpr) : Bool :=
+  let const (e : CExpr) : Bool := let (ss, corr) := slotsOf e 64; ss.isEmpty && !corr
+  match c with
+  | .isNull (.col 0 t) false => t == s
+  | .cmp op (.col 0 t) e _ k => (op == .eq || op == .is) && t == s && const e && k == coll
+  | .cmp op e (.col 0 t) _ k => (op == .eq || op == .is) && t == s && const e && k == coll
+  | _ => false
+
+/-- sqlite's min()/max() optimization (select.c minMaxQuery, where.c WHERE_ORDERBY_MIN/MAX): the only aggregate of a
+one-table core with no GROUP BY, HAVING or FILTER is min() or max() of a column, an ORDER BY the loop may satisfy, and
+the loop stops after its first row. The loop satisfies it when a WHERE term pins the column, or its access path gives
+the column in order: the rowid, or an index led by the column (read backwards for max(); min() of a column that may be
+NULL reads the index from its first non-NULL entry, which an ordered scan does not). The item is then read as
+`Access.ordered`, which for an aggregate core means the loop stops after one joined row. -/
+def minMaxCore (schema : Schema) : CCore → CCore
+  | .select #[.table root n ipk rc dv base access false false layout on] pre filters #[] gc none cols rcs order
+      #[.mk name dist false #[.col 0 s] coll none] true d w #[] =>
+    let core := .select #[.table root n ipk rc dv base access false false layout on] pre filters #[] gc none cols rcs order
+      #[.mk name dist false #[.col 0 s] coll none] true d w #[]
+    let sel (a : Access CExpr) : CCore :=
+      .select #[.table root n ipk rc dv base a false false layout on] pre filters #[] gc none cols rcs order
+        #[.mk name dist false #[.col 0 s] coll none] true d w #[]
+    let desc := name == "MAX"
+    if !(name == "MIN" || name == "MAX") || !layout.isEmpty || !on.isEmpty || s < base || s > base + n then core
+    else if (filters.getD 0 #[]).any (pinsCol s coll) then
+      match access with
+      | .full | .rowidRange .. | .index .. => sel (.ordered false access)
+      | _ => core
+    else
+      let isRowid := s == base + n || ipk.map (base + ·) == some s
+      let tbl := tableOfRoot schema root
+      let canBeNull := !isRowid && !(tbl.bind (·.cols[s - base]?)).any (·.notNull)
+      if !desc && canBeNull then core else
+      -- (a scan of the whole table: the one index led by the column, read whole in its order. sqlite may drive the loop from
+      -- another index when a WHERE term reads an index's leading column, or from a partial or expression index: left alone)
+      let access := match access, tbl with
+        | .full, some t =>
+          let ixs := schema.indexesOfTable t
+          let leads := ixs.map fun ix => base + ix.cols.getD 0 0
+          let others := (filters.getD 0 #[]).any fun c => (slotsOf c 64).1.any leads.contains
+          match ixs.filter fun ix => ix.cols[0]? == some (s - base) && ix.colls[0]? == some coll with
+          | #[ix] =>
+            if isRowid || others || ixs.any (fun ix => ix.pred.isSome || ix.hasExprs) then access
+            else Access.index ix.root ix.keyInfo #[] none none
+          | _ => access
+        | a, _ => a
+      match orderedItem schema true (.table root n ipk rc dv base access false false layout on) #[.col 0 s]
+          #[(desc, !desc, coll)] with
+      | some (.table _ _ _ _ _ _ a _ _ _ _) => sel a
+      | _ => core
+  | core => core
+
 /-- whether a query reads table `name` (a recursive WITH table refers to itself) -/
 def selectReads (q : Select) (name : String) : Bool :=
   match q with
@@ -671,6 +725,7 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
       cores := cores.map fun c => match c with
         | .select srcs pre f g gc h cols rc _ aggs isAgg d w ws => .select srcs pre f g gc h cols rc (ks.map (cols.getD · default)) aggs isAgg d w ws
         | .values rows _ => .values rows ks
+    cores := cores.map (minMaxCore env.schema)
     let dirs := orderBy.toArray.map fun (t : OrderTerm) => dirOf t names colls
     -- a plain column's collation for ORDER BY in a simple select
     let dirs := if single then dirs.mapIdx fun i d =>

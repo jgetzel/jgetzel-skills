@@ -16,7 +16,8 @@ inductive Access (E : Type) where
   whose columns equal the probes (both sides with the comparison's affinity, under its collation) -/
   | auto (keys : Array (Nat × E × Aff × Collation))
   /-- a scan (`full`, `rowidRange`, `index`) read lazily in the order that gives the SELECT's ORDER BY, backwards when
-  `desc`: the rows come off the tree as the join asks for them, so a LIMIT stops it -/
+  `desc`: the rows come off the tree as the join asks for them, so a LIMIT stops it. (An aggregate core's only item is
+  read this way only for sqlite's min()/max() optimization: the loop stops after its first row.) -/
   | ordered (desc : Bool) (a : Access E)
 
 /-- The same access path with each probe expression mapped. -/

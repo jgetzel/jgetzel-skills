@@ -1956,6 +1956,10 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
           return some (vjs.map (·.1), vjs.map (·.2))
         return some (← a.args.mapM (· e), #[])
       let fresh : Group dd := { accs := aggRuns.map fun _ => {}, frame := frame0 }
+      -- the planner's min()/max() early-out: an aggregate core whose item is read in order stops after one joined row
+      let minMax := match srcs with
+        | #[.table _ _ _ _ _ _ (.ordered ..) _ _ _ _] => true
+        | _ => false
       -- a group's result: its aggregates' values, unless HAVING rejects it
       let finish (g : Group dd) : EM (Option Env) := do
         let vals ← (aggRuns.zip g.accs).mapM fun (a, acc) => aggFinal a.name acc
@@ -1965,8 +1969,8 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
         return some e
       if groupBy.isEmpty then
         let g ← if !preOk then pure fresh else
-          joinAll (fun (g : Group dd) e _ => do return g.step aggRuns (← inputs e) e.top) (fun _ => false) false rightIdx env frame0
-            srcs runs subs autos needs need fresh fuel
+          joinAll (fun (g : Group dd) e _ => do return g.step aggRuns (← inputs e) e.top) (fun g => minMax && 1 ≤ g.n) false
+            rightIdx env frame0 srcs runs subs autos needs need fresh fuel
         pure (← finish g).toArray
       else
         -- the groups in an ordered map keyed by their GROUP BY values: they come out in its order
