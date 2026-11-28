@@ -61,6 +61,14 @@ def applyAff (a : Aff) (v : Value) : Value :=
   | .real, int i => real i.toFloat
   | _, _ => v
 
+/-- The affinity applied to a comparison's operand (applyAffinity at OP_Eq and OP_Affinity): as on storage, except that REAL
+leaves an integer as it is, so an integer is compared to a real exactly (cmpIntReal), not through a Float. -/
+def applyCmpAff (a : Aff) (v : Value) : Value :=
+  match a, v with
+  | .real, int _ => v
+  | .real, text s => (Num.textToNumeric? s).getD v
+  | _, _ => applyAff a v
+
 /-- sqlite3VdbeBooleanValue: a number is true when non-zero, text by its numeric prefix; NULL is none. -/
 def truth? : Value → Option Bool
   | null => none
