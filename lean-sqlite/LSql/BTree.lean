@@ -19,16 +19,18 @@ where
       let mid := (lo + hi) / 2
       if keys.getD mid 0 < k then go (mid+1) hi f else go lo mid f
 
-/-- The first `i` with `cells[i] ≥ key` under the index's order. -/
-def lowerBoundRec (ki : KeyInfo) (cells : Array Cell) (key : ByteArray) : Nat := go (decodeRecord key) 0 cells.size 64
+/-- The first `i` with `cells[i] ≥ probe` (a decoded key) under the index's order, and whether `cells[i]` equals it: the
+compare that last lowered the upper bound to `i` answered `.eq`. -/
+def searchRec (ki : KeyInfo) (cells : Array Cell) (probe : Array Value) : Nat × Bool := go 0 cells.size false 64
 where
-  go (probe : Array Value) (lo hi : Nat) : Nat → Nat
-    | 0 => lo
+  go (lo hi : Nat) (eq : Bool) : Nat → Nat × Bool
+    | 0 => (lo, false)
     | f+1 =>
-      if lo ≥ hi then lo else
+      if lo ≥ hi then (lo, eq) else
       let mid := (lo + hi) / 2
-      if cmpRecordProbe ki (cells.getD mid default).payload probe == .lt then go probe (mid+1) hi f else go probe lo mid f
-
+      match cmpRecordProbe ki (cells.getD mid default).payload probe with
+      | .lt => go (mid+1) hi eq f
+      | o => go lo mid (o == .eq) f
 /-! ## Splitting an over-full node
 
 `sizes` are the cells' on-page sizes (pointer included); `cap0` is the room on the page that keeps the first group (page 1
@@ -102,19 +104,20 @@ separator and page of each new sibling, in order. -/
 abbrev TSplits := Array (Int64 × Pgno)
 abbrev ISplits := Array (Cell × Pgno)
 
-def fitTableLeaf (p : Pager) (pg : Pgno) (keys : Array Int64) (cells : Array Cell) (append : Bool) : Pager × TSplits :=
+def fitTableLeaf (p : Pager) (pg : Pgno) (keys : Array Int64) (cells : Array Cell) (used : Nat) (append : Bool) :
+    Pager × TSplits :=
   let g := p.geo
-  let total := cells.foldl (fun n c => n + c.size + 2) 0
-  if total ≤ g.room pg true then (p.put pg (.table (.tleaf keys cells)), #[]) else
+  if used ≤ g.room pg true then (p.put pg (.table (.tleaf keys cells used)), #[]) else
   let sizes := (List.range keys.size).toArray.map fun i => tleafCellSize g (keys.getD i 0) (cells.getD i default)
   let starts := leafSplit sizes (g.room pg true) (g.room 0 true) append
   let ends := (starts.extract 1 starts.size).push keys.size
-  let p := p.put pg (.table (.tleaf (slice keys 0 (ends.getD 0 0)) (slice cells 0 (ends.getD 0 0))))
+  let leaf (a b : Nat) : Page := let cs := slice cells a b; .table (.tleaf (slice keys a b) cs (leafUsed cs))
+  let p := p.put pg (leaf 0 (ends.getD 0 0))
   (List.range (starts.size - 1)).foldl (fun (p, sp) j =>
     let a := starts.getD (j+1) 0
     let b := ends.getD (j+1) 0
     let (np, p) := p.alloc pg
-    (p.put np (.table (.tleaf (slice keys a b) (slice cells a b))), sp.push (keys.getD (a - 1) 0, np))) (p, #[])
+    (p.put np (leaf a b), sp.push (keys.getD (a - 1) 0, np))) (p, #[])
 
 def fitTableInner (p : Pager) (pg : Pgno) (keys : Array Int64) (kids : Array Pgno) : Pager × TSplits :=
   let g := p.geo
@@ -129,18 +132,18 @@ def fitTableInner (p : Pager) (pg : Pgno) (keys : Array Int64) (kids : Array Pgn
     let (np, p) := p.alloc pg
     (p.put np (.table (.tinner (slice keys (s+1) e) (slice kids (s+1) (e+1)))), sp.push (keys.getD s 0, np))) (p, #[])
 
-def fitIndexLeaf (p : Pager) (pg : Pgno) (cells : Array Cell) : Pager × ISplits :=
+def fitIndexLeaf (p : Pager) (pg : Pgno) (cells : Array Cell) (used : Nat) : Pager × ISplits :=
   let g := p.geo
-  let total := cells.foldl (fun n c => n + ileafCellSize g c) 0
-  if total ≤ g.room pg true then (p.put pg (.index (.ileaf cells)), #[]) else
+  if used ≤ g.room pg true then (p.put pg (.index (.ileaf cells used)), #[]) else
   let seps := upSplit (cells.map (ileafCellSize g)) (g.room pg true) (g.room 0 true)
   let s0 := seps.getD 0 cells.size
-  let p := p.put pg (.index (.ileaf (slice cells 0 s0)))
+  let leaf (a b : Nat) : Page := let cs := slice cells a b; .index (.ileaf cs (leafUsed cs))
+  let p := p.put pg (leaf 0 s0)
   (List.range seps.size).foldl (fun (p, sp) j =>
     let s := seps.getD j 0
     let e := seps.getD (j+1) cells.size
     let (np, p) := p.alloc pg
-    (p.put np (.index (.ileaf (slice cells (s+1) e))), sp.push (cells.getD s default, np))) (p, #[])
+    (p.put np (leaf (s+1) e), sp.push (cells.getD s default, np))) (p, #[])
 
 def fitIndexInner (p : Pager) (pg : Pgno) (cells : Array Cell) (kids : Array Pgno) : Pager × ISplits :=
   let g := p.geo
@@ -178,14 +181,16 @@ def tInsert (pg : Pgno) (rowid : Int64) (payload : ByteArray) : Nat → Pager �
   | fuel+1, p =>
     let (page, p) := p.take pg
     match page with
-    | .table (.tleaf keys cells) =>
+    | .table (.tleaf keys cells used) =>
       let i := lowerBound keys rowid
       let (cell, p) := p.allocOvfl .table payload (varintLen rowid.toUInt64) pg
       if i < keys.size && keys.getD i 0 == rowid then
-        let p := p.releaseOvfl (cells.getD i default)
-        fitTableLeaf p pg keys (cells.setIfInBounds i cell) false
+        let old := cells.getD i default
+        let p := p.releaseOvfl old
+        fitTableLeaf p pg keys (cells.setIfInBounds i cell) (used - old.size + cell.size) false
       else
-        fitTableLeaf p pg (keys.insertIdxIfInBounds i rowid) (cells.insertIdxIfInBounds i cell) (i == keys.size)
+        fitTableLeaf p pg (keys.insertIdxIfInBounds i rowid) (cells.insertIdxIfInBounds i cell) (used + cell.size + 2)
+          (i == keys.size)
     | .table (.tinner keys kids) =>
       let i := lowerBound keys rowid
       let (p, sp) := tInsert (kids.getD i 0) rowid payload fuel p
@@ -205,7 +210,7 @@ where
     | 0 => none
     | fuel+1 =>
       match p.get pg with
-      | .table (.tleaf keys cells) =>
+      | .table (.tleaf keys cells _) =>
         let i := lowerBound keys rowid
         if i < keys.size && keys.getD i 0 == rowid then cells[i]? else none
       | .table (.tinner keys kids) => go (kids.getD (lowerBound keys rowid) 0) fuel
@@ -213,9 +218,9 @@ where
 
 /-- Whether the page holds no cells (an empty leaf, or an interior page with only its right child). -/
 def isUnderfull : Page → Bool
-  | .table (.tleaf keys _) => keys.isEmpty
+  | .table (.tleaf keys _ _) => keys.isEmpty
   | .table (.tinner keys _) => keys.isEmpty
-  | .index (.ileaf cells) => cells.isEmpty
+  | .index (.ileaf cells _) => cells.isEmpty
   | .index (.iinner cells _) => cells.isEmpty
   | _ => false
 
@@ -233,9 +238,9 @@ def fixTableChild (p : Pager) (keys : Array Int64) (kids : Array Pgno) (i : Nat)
   let keys := keys.eraseIdxIfInBounds l
   let kids := kids.eraseIdxIfInBounds (l+1)
   match lpage, rpage with
-  | .table (.tleaf k1 c1), .table (.tleaf k2 c2) =>
+  | .table (.tleaf k1 c1 u1), .table (.tleaf k2 c2 u2) =>
     let p := p.release rp
-    let (p, sp) := fitTableLeaf p lp (k1 ++ k2) (c1 ++ c2) false
+    let (p, sp) := fitTableLeaf p lp (k1 ++ k2) (c1 ++ c2) (u1 + u2) false
     (p, insertMany keys l (sp.map (·.1)), insertMany kids (l+1) (sp.map (·.2)))
   | .table (.tinner k1 d1), .table (.tinner k2 d2) =>
     let p := p.release rp
@@ -247,15 +252,16 @@ def tDelete (pg : Pgno) (rowid : Int64) : Nat → Pager → Pager × TSplits × 
   | 0, p => (p, #[], false)
   | fuel+1, p =>
     match p.get pg with
-    | .table (.tleaf keys _) =>
+    | .table (.tleaf keys _ _) =>
       let i := lowerBound keys rowid
       if i < keys.size && keys.getD i 0 == rowid then
         let (page, p) := p.take pg
         match page with
-        | .table (.tleaf keys cells) =>
-          let p := p.releaseOvfl (cells.getD i default)
+        | .table (.tleaf keys cells used) =>
+          let old := cells.getD i default
+          let p := p.releaseOvfl old
           let keys := keys.eraseIdxIfInBounds i
-          (p.put pg (.table (.tleaf keys (cells.eraseIdxIfInBounds i))), #[], keys.isEmpty)
+          (p.put pg (.table (.tleaf keys (cells.eraseIdxIfInBounds i) (used - (old.size + 2)))), #[], keys.isEmpty)
         | other => (p.put pg other, #[], false)
       else (p, #[], false)
     | .table (.tinner keys _) =>
@@ -275,10 +281,9 @@ def tDelete (pg : Pgno) (rowid : Int64) : Nat → Pager → Pager × TSplits × 
 
 /-- Whether a node fits on page `pg`. -/
 def fits (g : Geo) (pg : Pgno) : Page → Bool
-  | .table (.tleaf keys cells) =>
-    cells.foldl (fun n c => n + c.size + 2) 0 ≤ g.room pg true
+  | .table (.tleaf _ _ used) => used ≤ g.room pg true
   | .table (.tinner keys _) => keys.foldl (fun n k => n + tinnerCellSize k) 0 ≤ g.room pg false
-  | .index (.ileaf cells) => cells.foldl (fun n c => n + ileafCellSize g c) 0 ≤ g.room pg true
+  | .index (.ileaf _ used) => used ≤ g.room pg true
   | .index (.iinner cells _) => cells.foldl (fun n c => n + iinnerCellSize g c) 0 ≤ g.room pg false
   | _ => true
 
@@ -311,7 +316,7 @@ where
     | 0 => none
     | fuel+1 =>
       match p.get pg with
-      | .table (.tleaf keys _) => keys.back?
+      | .table (.tleaf keys _ _) => keys.back?
       | .table (.tinner _ kids) => fromRight kids kids.size fuel
       | _ => none
   /-- the last child (from index `i` down) whose subtree has a row -/
@@ -323,31 +328,30 @@ where
 
 /-! ## Index trees -/
 
-def iInsert (ki : KeyInfo) (pg : Pgno) (key : ByteArray) : Nat → Pager → Pager × ISplits
+/-- (`probe` is `key` decoded) -/
+def iInsert (ki : KeyInfo) (pg : Pgno) (key : ByteArray) (probe : Array Value) : Nat → Pager → Pager × ISplits
   | 0, p => (p, #[])
   | fuel+1, p =>
     let (page, p) := p.take pg
     match page with
-    | .index (.ileaf cells) =>
-      let i := lowerBoundRec ki cells key
-      if i < cells.size && cmpRecords ki (cells.getD i default).payload key == .eq then
-        (p.put pg (.index (.ileaf cells)), #[])
+    | .index (.ileaf cells used) =>
+      let (i, found) := searchRec ki cells probe
+      if found then (p.put pg (.index (.ileaf cells used)), #[])
       else
         let (cell, p) := p.allocOvfl .index key 0 pg
-        fitIndexLeaf p pg (cells.insertIdxIfInBounds i cell)
+        fitIndexLeaf p pg (cells.insertIdxIfInBounds i cell) (used + cell.size + 2)
     | .index (.iinner cells kids) =>
-      let i := lowerBoundRec ki cells key
-      if i < cells.size && cmpRecords ki (cells.getD i default).payload key == .eq then
-        (p.put pg (.index (.iinner cells kids)), #[])
+      let (i, found) := searchRec ki cells probe
+      if found then (p.put pg (.index (.iinner cells kids)), #[])
       else
-      let (p, sp) := iInsert ki (kids.getD i 0) key fuel p
+      let (p, sp) := iInsert ki (kids.getD i 0) key probe fuel p
       if sp.isEmpty then (p.put pg (.index (.iinner cells kids)), #[])
       else fitIndexInner p pg (insertMany cells i (sp.map (·.1))) (insertMany kids (i+1) (sp.map (·.2)))
     | other => (p.put pg other, #[])
 
 /-- Inserts the entry `key` (a record ending with the rowid) in the index tree at `root` (nothing if present). -/
 def indexInsert (p : Pager) (ki : KeyInfo) (root : Pgno) (key : ByteArray) : Pager :=
-  let (p, sp) := iInsert ki root key maxDepth p
+  let (p, sp) := iInsert ki root key (decodeRecord key) maxDepth p
   growIndexRoot p root sp
 
 /-! ## Building an index tree from sorted entries -/
@@ -375,7 +379,7 @@ def buildLevel (root : Pgno) (cells : Array Cell) (kids : Option (Array Pgno)) :
     let g := p.geo
     let seps := packSeps (cells.map (if kids.isNone then ileafCellSize g else iinnerCellSize g)) (g.room 0 kids.isNone)
     let node (a b : Nat) : Node .index := match kids with
-      | none => .ileaf (cells.extract a b)
+      | none => let cs := cells.extract a b; .ileaf cs (leafUsed cs)
       | some ks => .iinner (cells.extract a b) (ks.extract a (b + 1))
     if seps.isEmpty then
       let (_, p) := p.take root
@@ -418,9 +422,9 @@ def fixIndexChild (p : Pager) (cells : Array Cell) (kids : Array Pgno) (i : Nat)
   let cells := cells.eraseIdxIfInBounds l
   let kids := kids.eraseIdxIfInBounds (l+1)
   match lpage, rpage with
-  | .index (.ileaf c1), .index (.ileaf c2) =>
+  | .index (.ileaf c1 u1), .index (.ileaf c2 u2) =>
     let p := p.release rp
-    let (p, sp) := fitIndexLeaf p lp (c1.push sep ++ c2)
+    let (p, sp) := fitIndexLeaf p lp (c1.push sep ++ c2) (u1 + sep.size + 2 + u2)
     (p, insertMany cells l (sp.map (·.1)), insertMany kids (l+1) (sp.map (·.2)))
   | .index (.iinner c1 d1), .index (.iinner c2 d2) =>
     let p := p.release rp
@@ -433,12 +437,12 @@ def removeMax (pg : Pgno) : Nat → Pager → Pager × Option Cell × Bool
   | 0, p => (p, none, false)
   | fuel+1, p =>
     match p.get pg with
-    | .index (.ileaf cells) =>
+    | .index (.ileaf cells used) =>
       match cells.back? with
       | none => (p, none, true)
       | some c =>
         let (_, p) := p.take pg
-        (p.put pg (.index (.ileaf cells.pop)), some c, cells.size == 1)
+        (p.put pg (.index (.ileaf cells.pop (used - (c.size + 2)))), some c, cells.size == 1)
     | .index (.iinner cells kids) =>
       let last := kids.size - 1
       let (p, m, uf) := removeMax (kids.getD last 0) fuel p
@@ -450,21 +454,23 @@ def removeMax (pg : Pgno) : Nat → Pager → Pager × Option Cell × Bool
       (p, m, cells.isEmpty && sp.isEmpty)
     | _ => (p, none, false)
 
-def iDelete (ki : KeyInfo) (pg : Pgno) (key : ByteArray) : Nat → Pager → Pager × ISplits × Bool
+/-- (`probe`: the entry, decoded) -/
+def iDelete (ki : KeyInfo) (pg : Pgno) (probe : Array Value) : Nat → Pager → Pager × ISplits × Bool
   | 0, p => (p, #[], false)
   | fuel+1, p =>
     match p.get pg with
-    | .index (.ileaf cells) =>
-      let i := lowerBoundRec ki cells key
-      if i < cells.size && cmpRecords ki (cells.getD i default).payload key == .eq then
+    | .index (.ileaf cells used) =>
+      let (i, found) := searchRec ki cells probe
+      if found then
         let (_, p) := p.take pg
-        let p := p.releaseOvfl (cells.getD i default)
+        let old := cells.getD i default
+        let p := p.releaseOvfl old
         let cells := cells.eraseIdxIfInBounds i
-        (p.put pg (.index (.ileaf cells)), #[], cells.isEmpty)
+        (p.put pg (.index (.ileaf cells (used - (old.size + 2)))), #[], cells.isEmpty)
       else (p, #[], false)
     | .index (.iinner cells kids) =>
-      let i := lowerBoundRec ki cells key
-      if i < cells.size && cmpRecords ki (cells.getD i default).payload key == .eq then
+      let (i, found) := searchRec ki cells probe
+      if found then
         -- an interior entry: its predecessor (the largest entry of its left subtree) takes its place
         let old := cells.getD i default
         let (p, m, uf) := removeMax (kids.getD i 0) maxDepth p
@@ -476,7 +482,7 @@ def iDelete (ki : KeyInfo) (pg : Pgno) (key : ByteArray) : Nat → Pager → Pag
         let (p, sp) := fitIndexInner p pg cells kids
         (p, sp, cells.isEmpty && sp.isEmpty)
       else
-        let (p, sp, uf) := iDelete ki (kids.getD i 0) key fuel p
+        let (p, sp, uf) := iDelete ki (kids.getD i 0) probe fuel p
         if sp.isEmpty && !uf then (p, #[], false) else
         let (_, p) := p.take pg
         let cells := insertMany cells i (sp.map (·.1))
@@ -488,7 +494,7 @@ def iDelete (ki : KeyInfo) (pg : Pgno) (key : ByteArray) : Nat → Pager → Pag
 
 /-- Deletes the entry `key` from the index tree at `root`. -/
 def indexDelete (p : Pager) (ki : KeyInfo) (root : Pgno) (key : ByteArray) : Pager :=
-  let (p, sp, _) := iDelete ki root key maxDepth p
+  let (p, sp, _) := iDelete ki root (decodeRecord key) maxDepth p
   collapseRoot (growIndexRoot p root sp) root maxDepth
 
 /-! ## Whole trees -/
@@ -496,7 +502,7 @@ def indexDelete (p : Pager) (ki : KeyInfo) (root : Pgno) (key : ByteArray) : Pag
 /-- A new empty tree on a fresh page. -/
 def create (p : Pager) (k : TreeKind) (temp : Bool := false) : Pgno × Pager :=
   let (pg, p) := p.alloc (if temp then tempRoot else 0)
-  (pg, p.put pg (match k with | .table => .table (.tleaf #[] #[]) | .index => .index (.ileaf #[])))
+  (pg, p.put pg (match k with | .table => .table (.tleaf #[] #[] 0) | .index => .index (.ileaf #[] 0)))
 
 /-- Deletes every entry: the root becomes an empty leaf, the other pages go on the freelist. -/
 def clear (p : Pager) (root : Pgno) : Pager :=
@@ -504,7 +510,7 @@ def clear (p : Pager) (root : Pgno) : Pager :=
   let p := ovfl.foldl Pager.release p
   let p := kids.foldl (fun p k => freeTree k maxDepth p) p
   let (old, p) := p.take root
-  p.put root (match old with | .index _ => .index (.ileaf #[]) | _ => .table (.tleaf #[] #[]))
+  p.put root (match old with | .index _ => .index (.ileaf #[] 0) | _ => .table (.tleaf #[] #[] 0))
 
 /-- Frees the whole tree, root included. -/
 def drop (p : Pager) (root : Pgno) : Pager := freeTree root maxDepth p
@@ -541,8 +547,8 @@ def settle (p : Pager) (stack : Array (Pgno × Nat)) : Nat → Cursor
     | none => {}
     | some (pg, i) =>
       match p.get pg with
-      | .table (.tleaf keys _) => if i < keys.size then { stack } else settle p stack.pop fuel
-      | .index (.ileaf cells) => if i < cells.size then { stack } else settle p stack.pop fuel
+      | .table (.tleaf keys _ _) => if i < keys.size then { stack } else settle p stack.pop fuel
+      | .index (.ileaf cells _) => if i < cells.size then { stack } else settle p stack.pop fuel
       | .table (.tinner _ kids) =>
         if i + 1 < kids.size then
           settle p (descendFirst p (stack.pop.push (pg, i+1)) (kids.getD (i+1) 0) maxDepth) fuel
@@ -575,7 +581,7 @@ where
     | 0 => stack
     | fuel+1 =>
       match p.get pg with
-      | .table (.tleaf keys _) => stack.push (pg, lowerBound keys rowid)
+      | .table (.tleaf keys _ _) => stack.push (pg, lowerBound keys rowid)
       | .table (.tinner keys kids) =>
         let i := lowerBound keys rowid
         go (kids.getD i 0) (stack.push (pg, i)) fuel
@@ -583,16 +589,16 @@ where
 
 /-- The first index entry at or after `probe` (a record; a shorter probe matches the entries it is a prefix of). -/
 def seekKey (p : Pager) (ki : KeyInfo) (root : Pgno) (probe : ByteArray) : Cursor :=
-  settle p (go root #[] maxDepth) (p.totalPages + maxDepth)
+  settle p (go (decodeRecord probe) root #[] maxDepth) (p.totalPages + maxDepth)
 where
-  go (pg : Pgno) (stack : Array (Pgno × Nat)) : Nat → Array (Pgno × Nat)
+  go (vs : Array Value) (pg : Pgno) (stack : Array (Pgno × Nat)) : Nat → Array (Pgno × Nat)
     | 0 => stack
     | fuel+1 =>
       match p.get pg with
-      | .index (.ileaf cells) => stack.push (pg, lowerBoundRec ki cells probe)
+      | .index (.ileaf cells _) => stack.push (pg, (searchRec ki cells vs).1)
       | .index (.iinner cells kids) =>
-        let i := lowerBoundRec ki cells probe
-        go (kids.getD i 0) (stack.push (pg, i)) fuel
+        let i := (searchRec ki cells vs).1
+        go vs (kids.getD i 0) (stack.push (pg, i)) fuel
       | _ => stack
 
 /-- The current row of a table cursor: rowid and record. -/
@@ -601,7 +607,7 @@ def row (p : Pager) (c : Cursor) : Option (Int64 × ByteArray) :=
   | none => none
   | some (pg, i) =>
     match p.get pg with
-    | .table (.tleaf keys cells) => some (keys.getD i 0, (cells.getD i default).payload)
+    | .table (.tleaf keys cells _) => some (keys.getD i 0, (cells.getD i default).payload)
     | _ => none
 
 /-- The current entry of an index cursor. -/
@@ -610,7 +616,7 @@ def key (p : Pager) (c : Cursor) : Option ByteArray :=
   | none => none
   | some (pg, i) =>
     match p.get pg with
-    | .index (.ileaf cells) | .index (.iinner cells _) => cells[i]?.map (·.payload)
+    | .index (.ileaf cells _) | .index (.iinner cells _) => cells[i]?.map (·.payload)
     | _ => none
 
 end Cursor
@@ -627,7 +633,7 @@ where
     | 0 => acc
     | fuel+1 =>
       match p.get pg with
-      | .table (.tleaf keys cells) => keys.size.fold (fun i h acc => f acc keys[i] (cells.getD i default).payload) acc
+      | .table (.tleaf keys cells _) => keys.size.fold (fun i h acc => f acc keys[i] (cells.getD i default).payload) acc
       | .table (.tinner _ kids) => kids.foldl (fun acc k => go k acc fuel) acc
       | _ => acc
 

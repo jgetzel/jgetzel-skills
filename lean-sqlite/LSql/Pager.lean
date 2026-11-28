@@ -19,15 +19,16 @@ inductive TreeKind where
   deriving DecidableEq, Repr, Inhabited
 
 /-- A b-tree page. In an interior node `kids.size = keys.size + 1` (the last kid is the right child). A table tree keys its
-rows by rowid; an interior table key is the largest rowid of its left subtree. An index tree's interior keys are entries. -/
+rows by rowid; an interior table key is the largest rowid of its left subtree. An index tree's interior keys are entries.
+A leaf's `used` is the bytes its cells take on the page, cell pointers included (`leafUsed` of its cells). -/
 inductive Node : TreeKind → Type where
-  | tleaf (keys : Array Int64) (cells : Array Cell) : Node .table
+  | tleaf (keys : Array Int64) (cells : Array Cell) (used : Nat) : Node .table
   | tinner (keys : Array Int64) (kids : Array Pgno) : Node .table
-  | ileaf (cells : Array Cell) : Node .index
+  | ileaf (cells : Array Cell) (used : Nat) : Node .index
   | iinner (cells : Array Cell) (kids : Array Pgno) : Node .index
 
-instance : Inhabited (Node .table) := ⟨.tleaf #[] #[]⟩
-instance : Inhabited (Node .index) := ⟨.ileaf #[]⟩
+instance : Inhabited (Node .table) := ⟨.tleaf #[] #[] 0⟩
+instance : Inhabited (Node .index) := ⟨.ileaf #[] 0⟩
 
 inductive Page where
   | table (n : Node .table)
@@ -76,6 +77,8 @@ end Geo
 @[inline] def tleafCellSize (_g : Geo) (_rowid : Int64) (c : Cell) : Nat := c.size + 2
 @[inline] def tinnerCellSize (key : Int64) : Nat := 4 + varintLen key.toUInt64 + 2
 @[inline] def ileafCellSize (_g : Geo) (c : Cell) : Nat := c.size + 2
+/-- The bytes leaf cells take on their page, cell pointers included. -/
+def leafUsed (cells : Array Cell) : Nat := cells.foldl (fun n c => n + c.size + 2) 0
 /-- (an over-estimate by at most 3 bytes for a cell under 4 bytes: it only leaves room unused) -/
 @[inline] def iinnerCellSize (_g : Geo) (c : Cell) : Nat := 4 + c.size + 2
 
@@ -107,7 +110,7 @@ def tempRoot : Pgno := tempBit + 1
 structure Pager where
   geo : Geo := {}
   /-- page `n` at index `n - 1` -/
-  pages : Array Page := #[.table (.tleaf #[] #[])]
+  pages : Array Page := #[.table (.tleaf #[] #[] 0)]
   free : Array Pgno := #[]
   /-- the 100-byte database header as last written (fields set at commit) -/
   hdr : ByteArray := ByteArray.empty
@@ -162,8 +165,8 @@ def journal (p : Pager) (n : Pgno) (old : Page) : Pager :=
   let p := if toTxn then { p with txnLog := p.txnLog.push (n, old) } else p
   let p := if toStmt then { p with stmtLog := p.stmtLog.push (n, old) } else p
   -- the flags mark exactly the pages the journals hold, so clearing a journal's pages clears them all
-  let p := p.setFlag n (f ||| (if toTxn then 1 else 0) ||| (if toStmt then 2 else 0))
-  if isTempPg n then p else { p with dirty := p.dirty.setIfInBounds i true }
+  let p := if toTxn || toStmt then p.setFlag n (f ||| (if toTxn then 1 else 0) ||| (if toStmt then 2 else 0)) else p
+  if isTempPg n || p.dirty.getD i false then p else { p with dirty := p.dirty.setIfInBounds i true }
 
 /-- Takes page `n` out for a change (a placeholder stays until `put`), journaling it first. Taking it out leaves the
 node with one reference, so its arrays update in place. -/
@@ -221,7 +224,7 @@ def releaseOvfl (p : Pager) (c : Cell) : Pager := c.ovfl.foldl release p
 
 /-- The temp space, made on first use: its page 1 is sqlite_temp_schema's root. -/
 def ensureTemp (p : Pager) : Pager :=
-  if p.tpages.isEmpty then { p with tpages := #[.table (.tleaf #[] #[])], tflags := #[0] } else p
+  if p.tpages.isEmpty then { p with tpages := #[.table (.tleaf #[] #[] 0)], tflags := #[0] } else p
 
 /-! ## Journals -/
 
@@ -322,7 +325,7 @@ def encodeCells (g : Geo) (pg : Pgno) (flag : UInt8) (right : Option Pgno) (cell
 
 /-- A page's bytes and the overflow pages its cells own. -/
 def encodePage (g : Geo) (pg : Pgno) : Page → ByteArray × Array (Pgno × ByteArray)
-  | .table (.tleaf keys cells) =>
+  | .table (.tleaf keys cells _) =>
     let cs := cells.mapIdx fun i c =>
       let b := putVarint ByteArray.empty c.payload.size.toUInt64
       let b := putVarint b (keys.getD i 0).toUInt64
@@ -331,7 +334,7 @@ def encodePage (g : Geo) (pg : Pgno) : Page → ByteArray × Array (Pgno × Byte
   | .table (.tinner keys kids) =>
     let cs := keys.mapIdx fun i k => putVarint (push32 ByteArray.empty (kids.getD i 0)) k.toUInt64
     (encodeCells g pg 5 (some (kids.back?.getD 0)) cs, #[])
-  | .index (.ileaf cells) =>
+  | .index (.ileaf cells _) =>
     let cs := cells.map fun c => pushPayload g .index (putVarint ByteArray.empty c.payload.size.toUInt64) c
     (encodeCells g pg 10 none cs, cells.foldl (fun a c => a ++ ovflBytes g .index c) #[])
   | .index (.iinner cells kids) =>
@@ -444,7 +447,7 @@ def decodePage (g : Geo) (file : ByteArray) (pg : Pgno) : Option Page :=
       let (size, a) := getVarint file (off + o)
       let (rowid, b) := getVarint file (off + o + a)
       (ks.push rowid.toInt64, cs.push (readPayload g file off .table (o + a + b) size.toNat b))) (#[], #[])
-    some (.table (.tleaf keys cells))
+    some (.table (.tleaf keys cells (leafUsed cells)))
   | 5 =>
     let (keys, kids) := (List.range n).foldl (fun (ks, kd) i =>
       let o := cellOff i
@@ -457,7 +460,7 @@ def decodePage (g : Geo) (file : ByteArray) (pg : Pgno) : Option Page :=
       let o := cellOff i
       let (size, a) := getVarint file (off + o)
       readPayload g file off .index (o + a) size.toNat
-    some (.index (.ileaf cells))
+    some (.index (.ileaf cells (leafUsed cells)))
   | 2 =>
     let (cells, kids) := (List.range n).foldl (fun (cs, kd) i =>
       let o := cellOff i
@@ -469,9 +472,9 @@ def decodePage (g : Geo) (file : ByteArray) (pg : Pgno) : Option Page :=
 
 /-- The child pages of a decoded page, and the overflow pages of its cells. -/
 def links : Page → Array Pgno × Array Pgno
-  | .table (.tleaf _ cells) => (#[], cells.foldl (fun a c => a ++ c.ovfl) #[])
+  | .table (.tleaf _ cells _) => (#[], cells.foldl (fun a c => a ++ c.ovfl) #[])
   | .table (.tinner _ kids) => (kids, #[])
-  | .index (.ileaf cells) => (#[], cells.foldl (fun a c => a ++ c.ovfl) #[])
+  | .index (.ileaf cells _) => (#[], cells.foldl (fun a c => a ++ c.ovfl) #[])
   | .index (.iinner cells kids) => (kids, cells.foldl (fun a c => a ++ c.ovfl) #[])
   | _ => (#[], #[])
 

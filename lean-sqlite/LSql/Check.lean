@@ -20,11 +20,12 @@ def walkTable (p : Pager) (root : Pgno) (pg : Pgno) (lo hi : Option Int64) (st :
   | fuel+1 =>
     let st := own st pg 1
     match p.get pg with
-    | .table (.tleaf keys cells) =>
+    | .table (.tleaf keys cells used) =>
       let inRange (k : Int64) : Bool := (lo.all (· < k)) && (hi.all (k ≤ ·))
       let sorted := (List.range (keys.size - 1)).all fun i => keys.getD i 0 < keys.getD (i+1) 0
       let st := if sorted && keys.all inRange then st else { st with errs := st.errs.push s!"Tree {root} page {pg}: rowid out of order" }
       let st := if keys.isEmpty && pg != root then { st with errs := st.errs.push s!"Tree {root} page {pg}: empty page" } else st
+      let st := if used == leafUsed cells then st else { st with errs := st.errs.push s!"Tree {root} page {pg}: used size wrong" }
       let st := cells.foldl (fun st c =>
         let st := if c.ovfl.size != p.geo.ovflPages .table c.payload.size then
           { st with errs := st.errs.push s!"Tree {root} page {pg}: overflow list length wrong" } else st
@@ -56,8 +57,9 @@ def walkIndex (p : Pager) (ki : KeyInfo) (root : Pgno) (pg : Pgno) (st : St × O
       (s, some c.payload)
     let st := (own st.1 pg 1, st.2)
     match p.get pg with
-    | .index (.ileaf cells) =>
+    | .index (.ileaf cells used) =>
       let st := if cells.isEmpty && pg != root then ({ st.1 with errs := st.1.errs.push s!"Tree {root} page {pg}: empty page" }, st.2) else st
+      let st := if used == leafUsed cells then st else ({ st.1 with errs := st.1.errs.push s!"Tree {root} page {pg}: used size wrong" }, st.2)
       (cells.foldl entry st, 0)
     | .index (.iinner cells kids) =>
       let (st, depths) := (List.range kids.size).foldl (fun (st, ds) i =>
