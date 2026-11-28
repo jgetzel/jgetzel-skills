@@ -408,8 +408,9 @@ def matchingRowids (t : Table) (name : String) (w : Option Expr) : XS (Array Int
   let core := CCore.select #[src] pre #[onRow] #[] #[] none #[.col 0 n] #[.binary] #[] #[] false false (n + 1) #[]
   let env ← envX
   let core ← liftR (hoistCore env core fuel0)
-  let rows ← liftR (runCore env none none core none 0 fuel0)
-  return rows.filterMap fun (r, _) => match r.getD 0 .null with | .int k => some k | _ => none
+  liftR (runCore env none none core fuel0 #[] (fun _ => false) fun ks r => do
+    let (r, _) ← r ()
+    pure (match r.getD 0 .null with | .int k => ks.push k | _ => ks))
 
 /-! ### WITHOUT ROWID tables: an index-format tree whose records are the key columns, then the rest -/
 

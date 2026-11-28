@@ -62,7 +62,7 @@ def sFB : Nat → FrameBound → String
 def sSel : Nat → Select → String
   | 0, _ => "..."
   | f + 1, .mk rec ctes first rest ob lim off =>
-    "{" ++ (if rec then "rec " else "") ++ join (ctes.map fun (.mk n cs q) => "with " ++ n ++ "(" ++ ",".intercalate cs ++ ")=" ++ sSel f q)
+    "{" ++ (if rec then "rec " else "") ++ join (ctes.map fun (.mk n cs q _) => "with " ++ n ++ "(" ++ ",".intercalate cs ++ ")=" ++ sSel f q)
     ++ " " ++ sCore f first ++ join (rest.map fun (op, c) => " " ++ seg (repr op) ++ " " ++ sCore f c)
     ++ (if ob.isEmpty then "" else " order " ++ join (ob.map fun (.mk e d nf) => sE f e ++ (if d then " desc" else "") ++ (match nf with | none => "" | some b => if b then " nf" else " nl")))
     ++ (match lim with | none => "" | some l => " limit " ++ sE f l) ++ (match off with | none => "" | some l => " offset " ++ sE f l) ++ "}"

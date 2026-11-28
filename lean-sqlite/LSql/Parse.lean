@@ -947,14 +947,16 @@ def cteList : Nat → List Cte → P (List Cte)
         pure ns
       else pure []
     expect .kAS
-    if (← curKind) == .kNOT then
-      advance
-      expect .kMATERIALIZED
-    else if (← curKind) == .kMATERIALIZED then advance
+    let materialized ← if (← curKind) == .kNOT then do
+        advance
+        expect .kMATERIALIZED
+        pure (some false)
+      else if (← curKind) == .kMATERIALIZED then do advance; pure (some true)
+      else pure none
     expect .lp
     let q ← parseSelect f
     expect .rp
-    let acc := Cte.mk name cols q :: acc
+    let acc := Cte.mk name cols q materialized :: acc
     if (← curKind) == .comma then
       advance
       cteList f acc

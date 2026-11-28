@@ -127,10 +127,11 @@ inductive CCore where
       (wins : Array CWin)
   | values (rows : Array (Array CExpr)) (order : Array Nat)
 
-/-- A WITH table, materialized when its SELECT runs. A recursive one's query has two cores: the initial one, then the
-recursive one reading the queue's current row. -/
+/-- A WITH table. A recursive one's query has two cores: the initial one, then the recursive one reading the queue's
+current row. `materialize`: its rows are computed whole when first read (MATERIALIZED, or read by more than one FROM
+item), not run by the one FROM item that reads it. -/
 inductive CCte where
-  | mk (id : Nat) (q : CSel) (recursive : Bool)
+  | mk (id : Nat) (q : CSel) (recursive : Bool) (materialize : Bool)
 
 /-- A compiled SELECT: its WITH tables, cores and compound operators, ORDER BY directions (desc, nulls first,
 collation), LIMIT and OFFSET, and its column count. -/

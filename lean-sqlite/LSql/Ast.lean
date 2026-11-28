@@ -137,9 +137,9 @@ inductive Core where
   /-- `VALUES (..), (..)`. -/
   | values (rows : List (List Expr))
 
-/-- A common table expression `name [(cols)] AS (select)`. -/
+/-- A common table expression `name [(cols)] AS [[NOT] MATERIALIZED] (select)`: `materialized`, as written (none: neither). -/
 inductive Cte where
-  | mk (name : String) (cols : List String) (q : Select)
+  | mk (name : String) (cols : List String) (q : Select) (materialized : Option Bool)
 
 inductive Select where
   /-- `[WITH [RECURSIVE] ctes] core (op core)* [ORDER BY ..] [LIMIT e [OFFSET e | , e]]`. `LIMIT a, b` is offset a,

@@ -48,6 +48,8 @@ structure CState where
   wins : Array CWin := #[]
   allowWin : Bool := false
   nextCte : Nat := 0
+  /-- how many FROM items read each WITH table, by id -/
+  cteReads : Array Nat := #[]
   /-- the deepest outer frame referred to since the last reset -/
   outer : Nat := 0
 
@@ -758,12 +760,16 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
     let co ← match offset with
       | some e => do let r ← compileExpr env e fuel; pure (some r.1)
       | none => pure none
+    -- a WITH table more than one FROM item reads is computed once, unless NOT MATERIALIZED
+    let reads := (← get).cteReads
+    let cctes := (cctes.zip ctes.toArray).map fun (CCte.mk id q r m, Cte.mk _ _ _ written) =>
+      CCte.mk id q r (m || (written != some false && reads.getD id 0 ≥ 2))
     return (.mk cctes cores ops dirs cl co names.size, names, affs, colls)
 
 def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv × Array CCte)
   | [], _ => return (env, #[])
   | _, 0 => throw "query nested too deeply"
-  | .mk name cols q :: rest, fuel+1 => do
+  | .mk name cols q materialized :: rest, fuel+1 => do
     let st ← get
     let id := st.nextCte
     set { st with nextCte := id + 1 }
@@ -771,7 +777,10 @@ def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv 
     let (cq, info) ← if selfRef then do
         -- the initial SELECT gives the column names; then the whole query is compiled with the table visible
         let .mk r c first rest2 _ _ _ := q
+        -- (the initial SELECT is compiled again with the rest: the WITH tables it reads are counted then)
+        let reads := (← get).cteReads
         let (_, ns, affs, _) ← compileSelect env (.mk r c first [] [] none none) fuel
+        modify fun st => { st with cteReads := reads }
         let ns := if cols.isEmpty then ns else cols.toArray
         let info : CteInfo := { name, id, cols := ns, affs := affs.map fun _ => .none }
         let env2 := { env with ctes := { info with queue := true } :: env.ctes }
@@ -786,7 +795,7 @@ def compileCtes (env : CEnv) (recursive : Bool) : List Cte → Nat → CM (CEnv 
         pure (cq, { name, id, cols := ns, affs : CteInfo })
     let env := { env with ctes := info :: env.ctes }
     let (env, more) ← compileCtes env recursive rest fuel
-    return (env, #[.mk id cq selfRef] ++ more)
+    return (env, #[.mk id cq selfRef (materialized == some true)] ++ more)
 
 /-- One core: FROM, WHERE, GROUP BY, HAVING and the result columns (and, for a simple SELECT, ORDER BY). -/
 def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
@@ -964,6 +973,9 @@ def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List
           let an := alias.getD name
           match env.ctes.find? (nameEq ·.name name) with
           | some c =>
+            unless c.queue do
+              modify fun st => { st with cteReads := (if st.cteReads.size ≤ c.id then
+                st.cteReads ++ Array.replicate (c.id + 1 - st.cteReads.size) 0 else st.cteReads).modify c.id (· + 1) }
             pure (CSource.cte c.id c.cols.size slot left right #[] #[],
               { name := an, cols := c.cols, affs := c.affs, colls := c.cols.map fun _ => .binary, base := slot,
                 rowid := none, hidden := c.cols.map fun _ => false : SrcInfo })
