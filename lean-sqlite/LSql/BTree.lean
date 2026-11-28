@@ -198,10 +198,36 @@ def tInsert (pg : Pgno) (rowid : Int64) (payload : ByteArray) : Nat → Pager �
       else fitTableInner p pg (insertMany keys i (sp.map (·.1))) (insertMany kids (i+1) (sp.map (·.2)))
     | other => (p.put pg other, #[])
 
-/-- Inserts (or replaces) the row `rowid` in the table tree at `root`. -/
+/-- The rightmost leaf of the table tree at `root` and its used bytes, when `rowid` is past every rowid in the tree: the
+leaf an insert of it appends to, found down the insert's path without changing a page. -/
+def appendLeaf (p : Pager) (root : Pgno) (rowid : Int64) : Option (Pgno × Nat) := go root maxDepth
+where
+  go (pg : Pgno) : Nat → Option (Pgno × Nat)
+    | 0 => none
+    | fuel+1 =>
+      match p.get pg with
+      | .table (.tleaf keys _ used) => if keys.back?.all (· < rowid) then some (pg, used) else none
+      | .table (.tinner keys kids) => if keys.back?.all (· < rowid) then go (kids.back?.getD 0) fuel else none
+      | _ => none
+
+/-- Inserts (or replaces) the row `rowid` in the table tree at `root`. A row past the last rowid that fits the rightmost
+leaf is appended to it, the one page written (sqlite's append bias: the interior pages above it do not change); any other
+goes down from the root. -/
 def tableInsert (p : Pager) (root : Pgno) (rowid : Int64) (payload : ByteArray) : Pager :=
-  let (p, sp) := tInsert root rowid payload maxDepth p
-  growTableRoot p root sp
+  let extra := varintLen rowid.toUInt64
+  let down (p : Pager) : Pager :=
+    let (p, sp) := tInsert root rowid payload maxDepth p
+    growTableRoot p root sp
+  match appendLeaf p root rowid with
+  | some (leaf, used) =>
+    if used + leafCellBytes p.geo .table payload.size extra + 2 > p.geo.room leaf true then down p else
+    let (page, p) := p.take leaf
+    match page with
+    | .table (.tleaf keys cells used) =>
+      let (cell, p) := p.allocOvfl .table payload extra leaf
+      p.put leaf (.table (.tleaf (keys.push rowid) (cells.push cell) (used + cell.size + 2)))
+    | other => down (p.put leaf other)
+  | none => down p
 
 /-- The row `rowid` of the table tree at `root`. -/
 def tableFind (p : Pager) (root : Pgno) (rowid : Int64) : Option Cell := go root maxDepth
