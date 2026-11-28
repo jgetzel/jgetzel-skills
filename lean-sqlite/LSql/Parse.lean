@@ -1582,9 +1582,7 @@ def parseUpdate (trig : Bool) : P Stmt := do
   advance
   let c ← parseOnConflictOpt
   let (name, _) ← parseQNameM
-  if (← curKind) == .kAS then
-    advance
-    let _ ← parseNm
+  let alias ← if (← curKind) == .kAS then do advance; pure (some (← parseNm)) else pure none
   expect .kSET
   let sets ← parseSetList
   if (← curKind) == .kFROM then unsupported "UPDATE FROM"
@@ -1595,7 +1593,7 @@ def parseUpdate (trig : Bool) : P Stmt := do
   match ← curKind with
   | .kORDER | .kLIMIT => unsupported "UPDATE ... ORDER BY / LIMIT"
   | _ => pure ()
-  returningTail trig (.update c name sets whr)
+  returningTail trig (.update c name alias sets whr)
 
 /-- After DO: NOTHING, or UPDATE SET .. [WHERE ..]. -/
 def upsertAction : P (Option (List (String × Expr) × Option Expr)) := do
@@ -1672,9 +1670,7 @@ def parseDelete (trig : Bool) : P Stmt := do
   advance
   expect .kFROM
   let (name, _) ← parseQNameM
-  if (← curKind) == .kAS then
-    advance
-    let _ ← parseNm
+  let alias ← if (← curKind) == .kAS then do advance; pure (some (← parseNm)) else pure none
   let whr ← if (← curKind) == .kWHERE then do
       advance
       pure (some (← ex))
@@ -1682,7 +1678,7 @@ def parseDelete (trig : Bool) : P Stmt := do
   match ← curKind with
   | .kORDER | .kLIMIT => unsupported "DELETE ... ORDER BY / LIMIT"
   | _ => pure ()
-  returningTail trig (.delete name whr)
+  returningTail trig (.delete name alias whr)
 
 def parsePragmaValue : P String := do
   let st ← get
@@ -1777,11 +1773,11 @@ def withExpr (recursive : Bool) (ctes : List Cte) : Nat → Expr → Expr
 
 /-- An UPDATE or DELETE under `WITH ctes`. -/
 def withStmt (recursive : Bool) (ctes : List Cte) : Stmt → Stmt
-  | .update c t sets whr => .update c t (sets.map fun (n, e) => (n, withExpr recursive ctes 1000 e))
+  | .update c t a sets whr => .update c t a (sets.map fun (n, e) => (n, withExpr recursive ctes 1000 e))
       (whr.map (withExpr recursive ctes 1000))
-  | .delete t whr => .delete t (whr.map (withExpr recursive ctes 1000))
-  | .returning (.update c t sets whr) cols => .returning (withStmt recursive ctes (.update c t sets whr)) cols
-  | .returning (.delete t whr) cols => .returning (withStmt recursive ctes (.delete t whr)) cols
+  | .delete t a whr => .delete t a (whr.map (withExpr recursive ctes 1000))
+  | .returning (.update c t a sets whr) cols => .returning (withStmt recursive ctes (.update c t a sets whr)) cols
+  | .returning (.delete t a whr) cols => .returning (withStmt recursive ctes (.delete t a whr)) cols
   | s => s
 
 /-- INSERT, UPDATE, DELETE, SELECT, VALUES, and WITH in front of one of them. -/

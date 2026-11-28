@@ -136,8 +136,8 @@ def updateSchemaRow (n : String) (f : Array Value → Array Value) (temp : Bool 
 /-! ## Rows: affinity, constraints, index entries -/
 
 /-- A table's scope for compiling expressions over one of its rows (columns, then the rowid, from slot 0). -/
-def tableScope (t : Table) : Scope :=
-  { srcs := #[{ name := t.name, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
+def tableScope (t : Table) (name : String := t.name) : Scope :=
+  { srcs := #[{ name, cols := t.cols.map (·.name), affs := t.cols.map (·.aff), colls := t.cols.map (·.coll),
                 base := 0, rowid := some t.cols.size, hidden := t.cols.map fun _ => false }] }
 
 /-- An expression compiled once, to run on many rows. -/
@@ -383,11 +383,11 @@ def setChanges (n : Int64) : XS Unit :=
 /-! ## Statements -/
 
 /-- The rows a WHERE clause selects from a table: each row's columns then its rowid (NULL in a WITHOUT ROWID table). -/
-def matching (t : Table) (w : Option Expr) : XS (Array Row) := do
-  let cols := t.cols.toList.map fun c => ResultCol.expr (.col (some t.name) c.name false) none c.name
-  let cols := if t.withoutRowid then cols else cols ++ [ResultCol.expr (.col (some t.name) "rowid" false) none "rowid"]
+def matching (t : Table) (name : String) (w : Option Expr) : XS (Array Row) := do
+  let cols := t.cols.toList.map fun c => ResultCol.expr (.col (some name) c.name false) none c.name
+  let cols := if t.withoutRowid then cols else cols ++ [ResultCol.expr (.col (some name) "rowid" false) none "rowid"]
   let qn := "\x00" ++ (if t.temp then "temp" else "main") ++ "\x00" ++ t.name
-  let q : Select := .mk false [] (.select false cols (some (.table qn (some t.name))) [] w [] none) [] [] none none
+  let q : Select := .mk false [] (.select false cols (some (.table qn (some name))) [] w [] none) [] [] none none
   let (cq, _, _) ← compileQ q
   let rows ← liftR (runSel (← envX) cq fuel0)
   return if t.withoutRowid then rows.map (·.push .null) else rows
@@ -395,10 +395,10 @@ def matching (t : Table) (w : Option Expr) : XS (Array Row) := do
 /-- The rowids of the rows a WHERE clause selects from a rowid table, found as sqlite's update.c and delete.c find them:
 the WHERE's conjuncts compiled over the table's row, an access path chosen from them, and the one-table core run; no
 SELECT is built and compiled. -/
-def matchingRowids (t : Table) (w : Option Expr) : XS (Array Int64) := do
+def matchingRowids (t : Table) (name : String) (w : Option Expr) : XS (Array Int64) := do
   let s ← schemaX
   let n := t.cols.size
-  let cenv : CEnv := { schema := s, scopes := tableScope t :: (← scopesX) }
+  let cenv : CEnv := { schema := s, scopes := tableScope t name :: (← scopesX) }
   let (conds, _) ← liftP ((compileList cenv (match w with | some w => conjuncts w 64 | none => []) fuel0).run {})
   let conds := conds.map (·.1)
   -- the conditions that read no column are checked once, the others on each row
@@ -1070,10 +1070,11 @@ def insert (conflict : Conflict) (qtn : String) (cols : List String) (src : Inse
     catch e => if isIgnore e then pure () else throw e
   setChanges n
 
-def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (w : Option Expr) : Nat → XS Unit
+def update (conflict : Conflict) (qtn : String) (alias : Option String) (sets : List (String × Expr)) (w : Option Expr) : Nat → XS Unit
   | 0 => runErr "too many levels of trigger recursion"
   | fuel+1 => do
   let tn := (Schema.splitQual qtn).2
+  let nm := alias.getD (Schema.splitQual qtn).2
   let s ← schemaX
   let (t, isView) ← match s.table? qtn with
     | some t => pure (t, false)
@@ -1090,13 +1091,13 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
     let tgt ← match t.colIndex? c with
       | some i => pure (some i)
       | none => if !t.withoutRowid && (nameEq c "rowid" || nameEq c "oid" || nameEq c "_rowid_") then pure none else parseErr s!"no such column: {c}"
-    let ((ce, _, _), _) ← liftP ((compileExpr { schema := s, scopes := tableScope t :: sc } e fuel0).run {})
+    let ((ce, _, _), _) ← liftP ((compileExpr { schema := s, scopes := tableScope t nm :: sc } e fuel0).run {})
     pure (tgt, ce)
   let cfs := targets.map (cfn ·.2)
   let hasTriggers := s.triggers.any (nameEq ·.table t.name)
   if !isView && !t.withoutRowid && !hasTriggers && conflict != .replace then
     -- each row decodes the columns the statement reads; its new record copies the others
-    let ks ← matchingRowids t w
+    let ks ← matchingRowids t nm w
     if ks.size ≤ 1 then modPager Pager.noStmtJournal
     let n := t.cols.size
     let all := !t.checks.isEmpty || t.strict || (← get).returned.isSome
@@ -1137,11 +1138,11 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
     setChanges cnt
     return
   let rows ← if isView then do
-      let q : Select := .mk false [] (.select false [.star] (some (.table tn none)) [] w [] none) [] [] none none
+      let q : Select := .mk false [] (.select false [.star] (some (.table tn (some nm))) [] w [] none) [] [] none none
       let (cq, _, _) ← compileQ q
       let rs ← liftR (runSel (← envX) cq fuel0)
       pure (rs.map (·.push .null))
-    else matching t w
+    else matching t nm w
   if rows.size ≤ 1 && !hasTriggers then modPager Pager.noStmtJournal
   let setCols := sets.map (·.1)
   let mut n : Int64 := 0
@@ -1180,10 +1181,11 @@ def update (conflict : Conflict) (qtn : String) (sets : List (String × Expr)) (
     catch e => if isIgnore e then pure () else throw e
   setChanges n
 
-def delete (qtn : String) (w : Option Expr) : Nat → XS Unit
+def delete (qtn : String) (alias : Option String) (w : Option Expr) : Nat → XS Unit
   | 0 => runErr "too many levels of trigger recursion"
   | fuel+1 => do
   let tn := (Schema.splitQual qtn).2
+  let nm := alias.getD (Schema.splitQual qtn).2
   let s ← schemaX
   let (t, isView) ← match s.table? qtn with
     | some t => pure (t, false)
@@ -1205,18 +1207,18 @@ def delete (qtn : String) (w : Option Expr) : Nat → XS Unit
     return
   if !hasTriggers && !isView && !t.withoutRowid && (← get).returned.isNone then
     -- only the rowids, and of each row only its index keys
-    let ks ← matchingRowids t w
+    let ks ← matchingRowids t nm w
     modPager Pager.noStmtJournal
     let need := indexNeed t idxs
     modPager fun p => ks.foldl (fun p k => deleteRowN need idxs t k p) p
     setChanges ks.size.toInt64
     return
   let rows ← if isView then do
-      let q : Select := .mk false [] (.select false [.star] (some (.table tn none)) [] w [] none) [] [] none none
+      let q : Select := .mk false [] (.select false [.star] (some (.table tn (some nm))) [] w [] none) [] [] none none
       let (cq, _, _) ← compileQ q
       let rs ← liftR (runSel (← envX) cq fuel0)
       pure (rs.map (·.push .null))
-    else matching t w
+    else matching t nm w
   modify fun db => { db with returned := db.returned.map (· ++ rows) }
   if !hasTriggers then
     -- deleting cannot fail
@@ -1266,8 +1268,8 @@ def exec1 (st : Stmt) : Nat → XS Result
   match st with
   | .select q => query q
   | .insert c t cols src ups => insert c t cols src ups fuel; return {}
-  | .update c t sets w => update c t sets w fuel; return {}
-  | .delete t w => delete t w fuel; return {}
+  | .update c t a sets w => update c t a sets w fuel; return {}
+  | .delete t a w => delete t a w fuel; return {}
   | .createTable n ine cols cons wr sql => createTable n ine cols cons wr sql; return {}
   | .createTableAs n ine q => createTableAs n ine q fuel; return {}
   | .createIndex n tn cols unique ine pred sql =>
@@ -1341,7 +1343,7 @@ def exec1 (st : Stmt) : Nat → XS Result
     return r
   | .returning st cols =>
     let tn := match st with
-      | .insert _ t _ _ _ => some t | .update _ t _ _ => some t | .delete t _ => some t | _ => none
+      | .insert _ t _ _ _ => some t | .update _ t _ _ _ => some t | .delete t _ _ => some t | _ => none
     let some tn := tn | parseErr "RETURNING is only allowed on INSERT, UPDATE and DELETE"
     let s ← schemaX
     let some t := s.table? tn | parseErr s!"cannot use RETURNING on {tn}"
@@ -1351,7 +1353,8 @@ def exec1 (st : Stmt) : Nat → XS Result
     let mut names : Array String := #[]
     for rc in cols do
       match rc with
-      | .star | .tableStar _ =>
+      | .tableStar _ => parseErr "RETURNING may not use \"TABLE.*\" wildcards"
+      | .star =>
         for k in [0:t.cols.size] do
           ces := ces.push (.col 0 k); names := names.push (t.cols.getD k default).name
       | .expr e alias span =>

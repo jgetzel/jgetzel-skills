@@ -230,9 +230,10 @@ inductive Stmt where
   | dropView (name : String) (ifExists : Bool)
   /-- `INSERT [OR c] INTO t [(cols)] source [upsert clauses]` and `REPLACE INTO` (conflict .replace). -/
   | insert (conflict : Conflict) (table : String) (cols : List String) (src : InsertSource) (upserts : List Upsert)
-  /-- `UPDATE [OR c] t SET col = e, .. [WHERE w]`. -/
-  | update (conflict : Conflict) (table : String) (sets : List (String × Expr)) («where» : Option Expr)
-  | delete (table : String) («where» : Option Expr)
+  /-- `UPDATE [OR c] t [AS alias] SET col = e, .. [WHERE w]`. -/
+  | update (conflict : Conflict) (table : String) (alias : Option String) (sets : List (String × Expr)) («where» : Option Expr)
+  /-- `DELETE FROM t [AS alias] [WHERE w]`. -/
+  | delete (table : String) (alias : Option String) («where» : Option Expr)
   | select (q : Select)
   | begin
   | commit
