@@ -98,9 +98,9 @@ def run (db : DB) : Array String :=
       let n := BTree.foldIndex p ix.root 0 fun n _ => n + 1
       let errs := if n != rows.size then errs.push s!"wrong # of entries in index {ix.name}" else errs
       rows.foldl (fun errs (r, k) =>
-        let key := idxEntry px r k
+        let key := entryVals px r k
         let c := BTree.Cursor.seekKey p ix.keyInfo ix.root key
-        if (c.key p).any (cmpRecords ix.keyInfo · key == .eq) then errs else errs.push s!"row {k} missing from index {ix.name}") errs) st.errs
+        if (c.key p).any (cmpRecordProbe ix.keyInfo · key == .eq) then errs else errs.push s!"row {k} missing from index {ix.name}") errs) st.errs
   errs
 
 end LSql.Check
