@@ -626,7 +626,7 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
           | none => throw s!"{ordinalName i} ORDER BY term does not match any column in the result set"
         ks := ks.push k
       cores := cores.map fun c => match c with
-        | .select srcs pre f g gc h cols rc _ aggs isAgg d w mm ws => .select srcs pre f g gc h cols rc (ks.map (cols.getD · default)) aggs isAgg d w mm ws
+        | .select srcs pre f g gc h cols rc _ aggs isAgg d w ws => .select srcs pre f g gc h cols rc (ks.map (cols.getD · default)) aggs isAgg d w ws
         | .values rows _ => .values rows ks
     let dirs := orderBy.toArray.map fun (t : OrderTerm) => dirOf t names colls
     -- a plain column's collation for ORDER BY in a simple select
@@ -828,13 +828,8 @@ def compileCore (env : CEnv) (core : Core) (orderBy : Option (List OrderTerm)) :
       | .sub q n base left false on _ => .sub q n base left false on (keys base n none left on)
       | .cte id n base left false on _ => .cte id n base left false on (keys base n none left on)
       | s => s
-    let minmax := if aggs.size == 1 then match aggs[0]? with
-        | some (.mk "MIN" _ _ _ _ _) => some (0, false)
-        | some (.mk "MAX" _ _ _ _ _) => some (0, true)
-        | _ => none
-      else none
     let rcolls := colls.map fun k => (k.map (·.1)).getD .binary
-    return (.select srcs pre filters cgroup gcolls chaving ccols rcolls corder aggs isAgg distinct width minmax wins, names, affs, colls)
+    return (.select srcs pre filters cgroup gcolls chaving ccols rcolls corder aggs isAgg distinct width wins, names, affs, colls)
 
 /-- The FROM items: sources, their scope entries, and the ON conditions (with the item each belongs to). -/
 def compileFrom (env : CEnv) : List (JoinKind × FromItem × Option Expr × List String) → Nat →

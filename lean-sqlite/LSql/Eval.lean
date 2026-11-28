@@ -2,6 +2,8 @@ import LSql.Compile
 import LSql.BTree
 import LSql.DateTime
 import LSql.Json
+import Std.Data.TreeMap
+import Std.Data.TreeSet
 /-! Running compiled SELECTs (sqlite's VDBE role, over immutable state): expressions compiled once per query to
 closures, the nested-loop join, aggregation, compound operators, ORDER BY and LIMIT. -/
 namespace LSql
@@ -272,9 +274,6 @@ structure AggAcc where
   bestAt : Nat := 0
   str : String := ""
   any : Bool := false
-  /-- DISTINCT: the argument lists seen, replayed when the group ends (and, for a JSON aggregate, which are JSON) -/
-  seen : Array (Array Value) := #[]
-  seenJ : Array (Array Bool) := #[]
   /-- json_group_array / json_group_object -/
   json : Json.Agg := {}
   /-- the percentile family: the inputs, the fraction (fixed by the first row), the first error -/
@@ -687,7 +686,14 @@ def orderRows (dirs : Array (Bool × Bool × Collation)) (bound : Option Nat) (r
     | none => es
   (sortBy es (cmpEntry dirs)).map fun e => (e.vals, #[])
 
-/-- The indexes of each row's first occurrence, in order (DISTINCT, UNION). -/
+/-- The rows whose result columns (compared field by field under `dirs`) no earlier row has, in order (DISTINCT): an
+ordered set of the result rows seen keeps the first occurrences. -/
+def firstRows (dirs : Array Collation) (rows : Array (Row × Row)) : Array (Row × Row) :=
+  (rows.foldl (fun ((out : Array (Row × Row)), (seen : Std.TreeSet Row (cmpRowsColl dirs))) r =>
+    let (dup, seen) := seen.containsThenInsert r.1
+    (if dup then out else out.push r, seen)) (#[], {})).1
+
+/-- The indexes of each row's first occurrence, in order (UNION, a recursive WITH table, window DISTINCT). -/
 def firstOccurrences (rows : Array Row) (colls : Array Collation := #[]) : Array Nat :=
   let idx := sortBy (rows.mapIdx fun i r => (r, i)) fun (a, i) (b, j) => match cmpRowsColl colls a b with
     | .eq => compare i j
@@ -1292,7 +1298,8 @@ instance : Inhabited SrcRun :=
   let no : CPred := fun _ => .ok false
   ⟨⟨no, no, #[], no, .full, #[], #[]⟩⟩
 
-/-- An aggregate's compiled closures: its arguments (with their JSON subtypes for a JSON aggregate), FILTER, and step. -/
+/-- An aggregate's compiled closures: its arguments (with their JSON subtypes for a JSON aggregate), FILTER, and step;
+`coll`: its argument's collation (min(), max() and DISTINCT compare under it). -/
 structure AggRun where
   name : String
   json : Bool
@@ -1301,6 +1308,47 @@ structure AggRun where
   argsJ : Array CFnJ
   filter : Option CPred
   step : AggStepFn
+  coll : Collation
+
+/-- Orders the arguments a group's DISTINCT aggregates have seen, (aggregate, its arguments): by aggregate, then under
+that aggregate's collations in `dd` (its argument's). -/
+def cmpSeen (dd : Array (Array Collation)) (a b : Nat × Row) : Ordering :=
+  match compare a.1 b.1 with
+  | .eq => cmpRowsColl (dd.getD a.1 #[]) a.2 b.2
+  | o => o
+
+/-- A group of an aggregate query (with no GROUP BY, the one group), stepped as its rows arrive: each aggregate's
+accumulator, its row count, the frame its bare columns read, whether its last row loaded that frame (sqlite's regHit),
+and the arguments its DISTINCT aggregates have seen. -/
+structure Group (dd : Array (Array Collation)) where
+  accs : Array AggAcc
+  n : Nat := 0
+  frame : Row
+  hit : Bool := false
+  seen : Std.TreeSet (Nat × Row) (cmpSeen dd) := {}
+
+/-- A row into its group: `ins`, each aggregate's arguments and (a JSON aggregate's) which are JSON (none: its FILTER
+rejects the row). As sqlite's accumulator load, the bare columns read the group's first row, then each row at which the
+last min() or max() to see it takes a new best value (or a NULL while it has none); a row its FILTER rejects loads
+nothing, and a DISTINCT duplicate leaves the decision as the row before made it. -/
+def Group.step (aggs : Array AggRun) (g : Group dd) (ins : Array (Option (Array Value × Array Bool))) (frame : Row) :
+    Group dd :=
+  let n := g.n
+  let (accs, seen, hit) := aggs.size.fold (fun j h (accs, seen, hit) =>
+    let a := aggs[j]
+    let mm := a.name == "MIN" || a.name == "MAX"
+    match ins.getD j none with
+    | none => (accs, seen, hit && !mm)
+    | some (vs, js) =>
+      let (dup, seen) := if a.distinct then seen.containsThenInsert (j, vs) else (false, seen)
+      if dup then (accs, seen, hit) else
+      -- taken out of the array first, so it is updated in place
+      let acc := accs.getD j {}
+      let had := acc.any
+      let accs := accs.setIfInBounds j {}
+      let acc := if a.json then { acc with json := Json.aggStep a.name acc.json vs js } else a.step acc vs n
+      (accs.setIfInBounds j acc, seen, if mm then !had || acc.bestAt == n else hit)) (g.accs, g.seen, g.hit)
+  { accs, n := n + 1, frame := if n == 0 || hit then frame else g.frame, hit, seen }
 
 /-- A SELECT core's expressions, compiled. -/
 structure CoreRun where
@@ -1326,7 +1374,7 @@ deriving Inhabited
 def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
   match core with
   | .values .. => default
-  | .select srcs pre filters groupBy _ having cols _ order aggs _ _ width _ wins =>
+  | .select srcs pre filters groupBy _ having cols _ order aggs _ _ width wins =>
     let srcExprs := srcs.foldl (fun acc s => match s with
       | .table _ _ _ _ _ _ acc' _ _ _ on => acc ++ on ++ (match acc' with
         | .rowidEq e => #[e] | .rowidIn es => es
@@ -1398,7 +1446,7 @@ def CCore.compile (sub : SubRun) (core : CCore) (fuel : Nat) : CoreRun :=
       | .mk name dist star args coll flt =>
         ({ name, json := Json.isJsonAgg name, distinct := dist, args := args.map (CExpr.compile sub · fuel),
            argsJ := args.map (CExpr.compileJson sub · fuel), filter := flt.map (CExpr.compileTrue sub · fuel),
-           step := aggStepOf name star coll } : AggRun)
+           step := aggStepOf name star coll, coll } : AggRun)
     { pre := compileConds sub pre fuel, runs, groupBy := groupBy.map (·.compile sub fuel), aggs,
       having := having.map (·.compileTrue sub fuel), cols := cols.map (·.compile sub fuel),
       order := order.map (·.compile sub fuel), need, needs, late, keys }
@@ -1591,7 +1639,7 @@ def hoist (env : Env) : CExpr → Nat → EM CExpr
 def hoistCore (env : Env) : CCore → Nat → EM CCore
   | c, 0 => .ok c
   | .values rows order, fuel+1 => do return .values (← rows.mapM fun r => r.mapM fun e => hoist env e fuel) order
-  | .select srcs pre filters g gc h cols rc order aggs isAgg d w mm ws, fuel+1 => do
+  | .select srcs pre filters g gc h cols rc order aggs isAgg d w ws, fuel+1 => do
     let hs (es : Array CExpr) : EM (Array CExpr) := es.mapM fun e => hoist env e fuel
     let srcs ← srcs.mapM fun (s : CSource) => (match s with
       | .table r n ipk rc dv base acc left right lay on => do
@@ -1604,7 +1652,7 @@ def hoistCore (env : Env) : CCore → Nat → EM CCore
     let h' ← match h with
       | some x => do let r ← hoist env x fuel; pure (some r)
       | none => pure none
-    return .select srcs (← hs pre) (← filters.mapM hs) (← hs g) gc h' (← hs cols) rc (← hs order) aggs isAgg d w mm ws
+    return .select srcs (← hs pre) (← filters.mapM hs) (← hs g) gc h' (← hs cols) rc (← hs order) aggs isAgg d w ws
 
 /-- Runs a SELECT: its rows. -/
 def runSel (env : Env) : CSel → Nat → EM (Array Row)
@@ -1693,10 +1741,10 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
       let vs ← r.mapM fun e => eval env e fuel
       out := out.push (vs, order.map (vs.getD · .null))
     return match ord with | some (dirs, bound) => orderRows dirs bound out | none => out
-  | .select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width minmax wins, hint, fuel+1 => do
+  | .select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width wins, hint, fuel+1 => do
     let frame0 : Row := Array.replicate width .null
     -- the core's expressions, compiled once (or by the caller, for all its runs)
-    let cr := pre?.getD ((CCore.select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width minmax
+    let cr := pre?.getD ((CCore.select srcs pre filters groupBy gcolls having cols rcolls order aggs isAgg distinct width
       wins).compile (fun env q => runSel env q fuel) fuel)
     let preOk ← cr.pre (env.push frame0)
     unless preOk do
@@ -1714,7 +1762,7 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
         | .cte id .. => buildAuto s width keys #[] (env.ctes.getD id #[])
         | _ => default
     let rightIdx := srcs.findIdx? isRightOuter
-    let hint := if isAgg || distinct || !order.isEmpty || !wins.isEmpty || rightIdx.isSome then none else hint
+    let hint := if isAgg || !order.isEmpty || !wins.isEmpty || rightIdx.isSome then none else hint
     let ⟨_, runs, groupByC, aggRuns, havingC, colsC, orderC, need, needs, late, keySrcs⟩ := cr
     -- ORDER BY of plain rows: each joined row goes into the sorter as the join makes it, its keys packed in a record (a
     -- key that is a table column read from the record in place) and its computed result columns evaluated; the columns
@@ -1757,71 +1805,61 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
             | some s => (row.push (fr.getD s .null), j)
             | none => (row.push (en.vals.getD j .null), j + 1)) (#[], 0)).1
           (row, #[])
-    let frames ← if !preOk then pure #[] else
-      joinAll (fun (rows : Array Row) e _ => pure (rows.push e.top)) (fun rows => hint.any (rows.size ≥ ·)) false rightIdx env frame0
-        srcs runs subs autos needs need #[] fuel
+    -- DISTINCT rows: each joined row's result passed on at its first occurrence (an ordered set keeps the results seen),
+    -- so a LIMIT stops the scan
+    if distinct && !isAgg && wins.isEmpty then
+      let emit (st : Array (Row × Row) × Std.TreeSet Row (cmpRowsColl rcolls)) (e : Env) (_ : Array RowRef) :
+          EM (Array (Row × Row) × Std.TreeSet Row (cmpRowsColl rcolls)) := do
+        let (rows, seen) := st
+        let vs ← colsC.mapM (· e)
+        let (dup, seen) := seen.containsThenInsert vs
+        if dup then return (rows, seen)
+        return (rows.push (vs, ← orderC.mapM (· e)), seen)
+      let (rows, _) ← if !preOk then pure (#[], {})
+        else joinAll emit (fun st => hint.any (st.1.size ≥ ·)) false rightIdx env frame0 srcs runs subs autos needs need (#[], {}) fuel
+      return match ord with | some (dirs, bound) => orderRows dirs bound rows | none => rows
     -- each result row's environment: its frame, or (aggregates) its group's
-    let envs : Array Env ← if !isAgg then pure (frames.map env.push) else do
-      -- groups: consecutive runs of equal GROUP BY keys after a stable sort
-      let groups ← if groupBy.isEmpty then pure #[frames] else do
-        let keyed ← frames.mapM fun fr => do
-          let ks ← groupByC.mapM (· (env.push fr))
-          pure (ks, fr)
-        let sorted := sortBy keyed fun a b => cmpRowsColl gcolls a.1 b.1
-        let gs := sorted.foldl (fun (gs : Array (Row × Array Row)) (k, fr) =>
-          match gs.back? with
-          | some (pk, g) => if cmpRowsColl gcolls pk k == .eq then gs.pop.push (pk, g.push fr) else gs.push (k, #[fr])
-          | none => gs.push (k, #[fr])) #[]
-        pure (gs.map (·.2))
-      let mut out : Array Env := #[]
-      for g in groups do
-        -- step every aggregate over the group's rows
-        let mut accs : Array AggAcc := aggRuns.map fun _ => {}
-        let mut i := 0
-        for fr in g do
-          let e := env.push fr
-          let mut j := 0
-          for a in aggRuns do
-            -- a FILTER (WHERE f) skips the rows f is not true for
-            if let some f := a.filter then
-              if !(← f e) then
-                j := j + 1
-                continue
-            -- (a JSON aggregate sees which arguments are JSON)
-            let vjs ← if a.json then a.argsJ.mapM (· e)
-              else do let vs ← a.args.mapM (· e); pure (vs.map fun v => (v, false))
-            let vs := vjs.map (·.1)
-            -- taken out of the array first, so it is updated in place
-            let acc := accs.getD j {}
-            accs := accs.setIfInBounds j {}
-            let acc := if a.distinct then (if vs.any (·.isNull) then acc else
-                { acc with seen := acc.seen.push vs, seenJ := if a.json then acc.seenJ.push (vjs.map (·.2)) else acc.seenJ })
-              else if a.json then { acc with json := Json.aggStep a.name acc.json vs (vjs.map (·.2)) }
-              else a.step acc vs i
-            accs := accs.setIfInBounds j acc
-            j := j + 1
-          i := i + 1
-        let mut vals := #[]
-        let mut j := 0
-        for ar in aggRuns do
-          let acc := accs.getD j {}
-          let acc := if ar.distinct then
-              (firstOccurrences acc.seen).foldl (fun a k =>
-                if ar.json then { a with json := Json.aggStep ar.name a.json (acc.seen.getD k #[]) (acc.seenJ.getD k #[]) }
-                else ar.step a (acc.seen.getD k #[]) 0) ({} : AggAcc)
-            else acc
-          vals := vals.push (← aggFinal ar.name acc)
-          accs := accs.setIfInBounds j acc
-          j := j + 1
-        let rep : Row := match minmax with
-          | some (k, _) => g.getD (accs.getD k {}).bestAt frame0
-          -- sqlite reads bare columns from a group's first row (with no GROUP BY, the last)
-          | none => if groupBy.isEmpty then g.back?.getD frame0 else g[0]?.getD frame0
-        let e := { (env.push rep) with aggs := vals, aggJson := aggRuns.map (·.json) }
+    let envs : Array Env ← if !isAgg then do
+        let frames ← if !preOk then pure #[] else
+          joinAll (fun (rows : Array Row) e _ => pure (rows.push e.top)) (fun rows => hint.any (rows.size ≥ ·)) false rightIdx env
+            frame0 srcs runs subs autos needs need #[] fuel
+        pure (frames.map env.push)
+      else do
+      -- each joined row stepped into its group as the join makes it
+      let dd := aggRuns.map fun a => a.args.map fun _ => a.coll
+      let inputs (e : Env) : EM (Array (Option (Array Value × Array Bool))) := aggRuns.mapM fun a => do
+        -- a FILTER (WHERE f) skips the rows f is not true for
+        if let some f := a.filter then
+          if !(← f e) then return none
+        -- (a JSON aggregate sees which arguments are JSON)
+        if a.json then
+          let vjs ← a.argsJ.mapM (· e)
+          return some (vjs.map (·.1), vjs.map (·.2))
+        return some (← a.args.mapM (· e), #[])
+      let fresh : Group dd := { accs := aggRuns.map fun _ => {}, frame := frame0 }
+      -- a group's result: its aggregates' values, unless HAVING rejects it
+      let finish (g : Group dd) : EM (Option Env) := do
+        let vals ← (aggRuns.zip g.accs).mapM fun (a, acc) => aggFinal a.name acc
+        let e := { (env.push g.frame) with aggs := vals, aggJson := aggRuns.map (·.json) }
         if let some h := havingC then
-          if !(← h e) then continue
-        out := out.push e
-      pure out
+          if !(← h e) then return none
+        return some e
+      if groupBy.isEmpty then
+        let g ← if !preOk then pure fresh else
+          joinAll (fun (g : Group dd) e _ => do return g.step aggRuns (← inputs e) e.top) (fun _ => false) false rightIdx env frame0
+            srcs runs subs autos needs need fresh fuel
+        pure (← finish g).toArray
+      else
+        -- the groups in an ordered map keyed by their GROUP BY values: they come out in its order
+        let groups ← joinAll (fun (m : Std.TreeMap Row (Group dd) (cmpRowsColl gcolls)) e _ => do
+            let key ← groupByC.mapM (· e)
+            let ins ← inputs e
+            return m.alter key fun g => some ((g.getD fresh).step aggRuns ins e.top))
+          (fun _ => false) false rightIdx env frame0 srcs runs subs autos needs need {} fuel
+        groups.foldlM (fun out _ g => do
+          match ← finish g with
+          | some e => return out.push e
+          | none => return out) #[]
     -- window functions, over all the result rows
     let winCols ← wins.mapM fun w => winColumn envs w fuel
     let mut out := #[]
@@ -1830,7 +1868,7 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
       let vs ← colsC.mapM (· e)
       let ks ← orderC.mapM (· e)
       out := out.push (vs, ks)
-    let rows := if distinct then (firstOccurrences (out.map (·.1)) rcolls).map (out.getD · default) else out
+    let rows := if distinct then firstRows rcolls out else out
     return match ord with | some (dirs, bound) => orderRows dirs bound rows | none => rows
 
 /-- A window function's value for each result row: rows ordered by partition and ORDER BY keys, peers grouped, and the
