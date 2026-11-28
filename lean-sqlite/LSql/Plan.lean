@@ -99,11 +99,10 @@ inductive CAgg where
 inductive CCore where
   /-- `filters[i]`: the conditions checked once sources `0..i` are bound; `pre`: those that need no source.
   `gcolls`, `rcolls`: the collations GROUP BY keys and (for DISTINCT) result columns compare under.
-  `order`: the ORDER BY keys, computed beside each result row. `minmax`: the single min()/max() aggregate whose row
-  the bare columns read. -/
+  `order`: the ORDER BY keys, computed beside each result row. -/
   | select (srcs : Array CSource) (pre : Array CExpr) (filters : Array (Array CExpr)) (groupBy : Array CExpr)
       (gcolls : Array Collation) (having : Option CExpr) (cols : Array CExpr) (rcolls : Array Collation)
-      (order : Array CExpr) (aggs : Array CAgg) (isAgg : Bool) (distinct : Bool) (width : Nat) (minmax : Option (Nat × Bool))
+      (order : Array CExpr) (aggs : Array CAgg) (isAgg : Bool) (distinct : Bool) (width : Nat)
       (wins : Array CWin)
   | values (rows : Array (Array CExpr)) (order : Array Nat)
 
