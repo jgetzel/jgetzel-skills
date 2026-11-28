@@ -15,9 +15,13 @@ inductive Access (E : Type) where
   /-- sqlite's automatic index: built once per run of the SELECT on the columns at slots `keys`, then searched for the rows
   whose columns equal the probes (both sides with the comparison's affinity, under its collation) -/
   | auto (keys : Array (Nat × E × Aff × Collation))
+  /-- a scan (`full`, `rowidRange`, `index`) read lazily in the order that gives the SELECT's ORDER BY, backwards when
+  `desc`: the rows come off the tree as the join asks for them, so a LIMIT stops it -/
+  | ordered (desc : Bool) (a : Access E)
 
 /-- The same access path with each probe expression mapped. -/
 def Access.map (f : α → β) : Access α → Access β
+  | .ordered d a => .ordered d (a.map f)
   | .full => .full
   | .rowidEq e => .rowidEq (f e)
   | .rowidIn items => .rowidIn (items.map f)
@@ -25,6 +29,22 @@ def Access.map (f : α → β) : Access α → Access β
   | .index root ki eqs lo hi =>
     .index root ki (eqs.map fun (e, a) => (f e, a)) (lo.map fun (e, i, a) => (f e, i, a)) (hi.map fun (e, i, a) => (f e, i, a))
   | .auto keys => .auto (keys.map fun (s, e, a, c) => (s, f e, a, c))
+
+/-- Whether the path reads the whole table or a rowid range of it. -/
+def Access.isScan : Access E → Bool
+  | .full | .rowidRange .. => true
+  | .ordered _ a => a.isScan
+  | _ => false
+
+/-- The probe expressions of an access path. -/
+def Access.exprs : Access E → Array E
+  | .full => #[]
+  | .rowidEq e => #[e]
+  | .rowidIn items => items
+  | .rowidRange lo hi => (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
+  | .index _ _ eqs lo hi => eqs.map (·.1) ++ (lo.map (·.1)).toArray ++ (hi.map (·.1)).toArray
+  | .auto keys => keys.map (·.2.1)
+  | .ordered _ a => a.exprs
 
 mutual
 /-- A compiled expression. A column is `(depth, slot)`: the row frame `depth` levels out from the current one. -/

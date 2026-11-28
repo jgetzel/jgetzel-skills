@@ -377,6 +377,49 @@ def rowCmp (op : BinOp) : List Expr → List Expr → Nat → Expr
     | _ => .lit .null
   | _, _, _ => .lit .null
 def tableOfRoot (s : Schema) (root : Pgno) : Option Table := s.tables.find? (·.root == root)
+/-- A simple SELECT's first FROM item read through an access path that already gives the ORDER BY keys (sqlite's where.c:
+the loop's order satisfies the ORDER BY, so no sorter is used): the item with its path read in that order. The keys are
+the rowid, or the columns of the index in use after its equality prefix (then the rowid), each with the index's
+collation and the default NULL placement, all in one direction or all in the opposite one (the index read backwards). Keys
+after the rowid matter only when the item is not `alone` in the FROM clause (its row then comes with several joined rows). -/
+def orderedItem (schema : Schema) (alone : Bool) (src : CSource) (order : Array CExpr) (dirs : Array (Bool × Bool × Collation)) :
+    Option CSource :=
+  match src with
+  | .table root n ipk rc dv base access false false layout on =>
+    let isRowid (s : Nat) : Bool := s == base + n || ipk.map (base + ·) == some s
+    let withAccess (a : Access CExpr) : Option CSource := some (.table root n ipk rc dv base a false false layout on)
+    match order.mapM (fun o => match o with | .col 0 s => some s | _ => none), dirs[0]? with
+    | some ss, some (desc0, _, _) =>
+      if !layout.isEmpty then none else
+      match access with
+      -- (one row of the item: keys of its own columns are the same on every output row)
+      | .rowidEq _ => if ss.all (fun s => base ≤ s && s ≤ base + n) then withAccess access else none
+      | .rowidIn _ => if isRowid (ss.getD 0 0) && !desc0 && (alone || ss.size == 1) then withAccess access else none
+      | .full | .rowidRange .. =>
+        if isRowid (ss.getD 0 0) && (alone || ss.size == 1) then withAccess (.ordered desc0 access) else none
+      | .index iroot _ eqs _ _ => do
+        let ix ← (tableOfRoot schema root).bind fun t => (schema.indexesOfTable t).find? (·.root == iroot)
+        -- whether key `j` reads backwards, and whether it is the rowid
+        let keyBack (j : Nat) : Option (Bool × Bool) := do
+          let (d, nf, coll) ← dirs[j]?
+          let s ← ss[j]?
+          let c := eqs.size + j
+          if c < ix.cols.size then
+            if s == base + ix.cols.getD c 0 && coll == ix.colls.getD c .binary && nf == !d then some (d != ix.desc.getD c false, false)
+            else none
+          else if c == ix.cols.size && isRowid s then some (d, true) else none
+        let r ← (List.range ss.size).foldl (fun (st : Option (Option Bool × Bool)) j => match st with
+          | some (back, false) => do
+            let (b, isRowidKey) ← keyBack j
+            if back.all (· == b) then some (some b, isRowidKey) else none
+          -- (the rowid is unique: no later key matters, unless joined rows follow it)
+          | some (back, true) => if alone then some (back, true) else none
+          | none => none) (some (none, false))
+        withAccess (.ordered (r.1.getD false) access)
+      | _ => none
+    | _, _ => none
+  | _ => none
+
 /-- whether a query reads table `name` (a recursive WITH table refers to itself) -/
 def selectReads (q : Select) (name : String) : Bool :=
   match q with
@@ -639,6 +682,16 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
           | none => (desc, nf, coll)
         | none => d
       else dirs
+    -- a simple SELECT whose first FROM item's access path gives the ORDER BY needs no sort
+    let (cores', dirs) := match cores[0]?, single with
+      | some (.select srcs pre f g gc h cols rc order aggs false false w #[]), true =>
+        if g.isEmpty && !srcs.any isRightOuter then
+          match srcs[0]?.bind fun s => orderedItem env.schema (srcs.size == 1) s order dirs with
+          | some s0 => (#[CCore.select (srcs.setIfInBounds 0 s0) pre f g gc h cols rc #[] aggs false false w #[]], #[])
+          | none => (cores, dirs)
+        else (cores, dirs)
+      | _, _ => (cores, dirs)
+    cores := cores'
     let cl ← match limit with
       | some e => do let r ← compileExpr { env with scopes := env.scopes } e fuel; pure (some r.1)
       | none => pure none
