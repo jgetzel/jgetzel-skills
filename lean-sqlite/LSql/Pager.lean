@@ -165,8 +165,8 @@ def journal (p : Pager) (n : Pgno) (old : Page) : Pager :=
   let p := if toTxn then { p with txnLog := p.txnLog.push (n, old) } else p
   let p := if toStmt then { p with stmtLog := p.stmtLog.push (n, old) } else p
   -- the flags mark exactly the pages the journals hold, so clearing a journal's pages clears them all
-  let p := if toTxn || toStmt then p.setFlag n (f ||| (if toTxn then 1 else 0) ||| (if toStmt then 2 else 0)) else p
-  if isTempPg n || p.dirty.getD i false then p else { p with dirty := p.dirty.setIfInBounds i true }
+  let p := p.setFlag n (f ||| (if toTxn then 1 else 0) ||| (if toStmt then 2 else 0))
+  if isTempPg n then p else { p with dirty := p.dirty.setIfInBounds i true }
 
 /-- Takes page `n` out for a change (a placeholder stays until `put`), journaling it first. Taking it out leaves the
 node with one reference, so its arrays update in place. -/

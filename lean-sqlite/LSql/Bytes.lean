@@ -68,7 +68,6 @@ def varintLen (v : UInt64) : Nat :=
 
 /-- Appends the varint of `v`. -/
 def putVarint (b : ByteArray) (v : UInt64) : ByteArray :=
-  if v < 0x80 then b.push v.toUInt8 else
   if v >>> 56 != 0 then
     -- 9 bytes: 8 bytes of 7 bits (the high 56 bits of v), then the low 8 bits whole
     let hi := v >>> 8

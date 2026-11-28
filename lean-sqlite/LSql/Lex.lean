@@ -531,10 +531,6 @@ where
 
 /-- Lexes the number starting at i (a digit, or a '.' followed by a digit). -/
 def lexNumber (s : String) (i : Nat) : Token :=
-  let j0 := scanWhile isDigit s i
-  let c := byteAt s j0
-  -- a plain integer: nothing that continues a number or a word follows the digits
-  if j0 > i && !isIdChar c && c != 46 then ⟨.int, i, j0⟩ else
   let c1 := byteAt s (i + 1)
   let (kind, j) : TK × Nat :=
     if byteAt s i == 48 && (c1 ||| 32) == 120 && isXDigit (byteAt s (i + 2)) then
