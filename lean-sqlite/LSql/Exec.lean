@@ -1172,12 +1172,21 @@ def update (conflict : Conflict) (qtn : String) (alias : Option String) (sets : 
         n := n + 1
       else
         fire .before (.update setCols) t (some newFull) (some old) setCols fuel
-        let wrote ← if t.withoutRowid then writeRowWor t idxs cks newFull conflict (some old)
-          else writeRow t idxs cks row2 nr conflict (some oldRowid)
-        if wrote then
-          n := n + 1
-          noteRow newFull
-          fire .after (.update setCols) t (some newFull) (some old) setCols fuel
+        -- the row is read again: the columns the statement does not set are as the triggers left them, and a row they deleted is skipped
+        let p := (← get).pager
+        let cur? : Option Row := if t.withoutRowid then worFind p t old
+          else (BTree.tableFind p t.root oldRowid).map fun c => tableRow t oldRowid c.payload
+        if let some cur := cur? then
+          let setCol (i : Nat) : Bool := targets.any fun (tgt, _) => tgt == some i
+          let fresh := row.zipIdx.map fun (v, i) => if setCol i then v else cur.getD i .null
+          let fresh2 := match t.ipk with | some i => fresh.setIfInBounds i (.int nr) | none => fresh
+          let newFull := fresh2.push (if t.withoutRowid then .null else .int nr)
+          let wrote ← if t.withoutRowid then writeRowWor t idxs cks newFull conflict (some old)
+            else writeRow t idxs cks fresh2 nr conflict (some oldRowid)
+          if wrote then
+            n := n + 1
+            noteRow newFull
+            fire .after (.update setCols) t (some newFull) (some old) setCols fuel
     catch e => if isIgnore e then pure () else throw e
   setChanges n
 
@@ -1236,6 +1245,13 @@ def delete (qtn : String) (alias : Option String) (w : Option Expr) : Nat → XS
         fire .insteadOf .delete t none (some old) [] fuel
       else
         fire .before .delete t none (some old) [] fuel
+        -- a row the triggers deleted is skipped
+        let p := (← get).pager
+        let there := if t.withoutRowid then (worFind p t old).isSome
+          else match old.getD t.cols.size .null with
+            | .int k => (BTree.tableFind p t.root k).isSome
+            | _ => false
+        if !there then continue
         if t.withoutRowid then modPager (worDeleteP idxs t old)
         else match old.getD t.cols.size .null with
           | .int k => modPager (deleteRowP idxs t k)
