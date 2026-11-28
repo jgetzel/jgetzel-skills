@@ -1841,7 +1841,9 @@ def foldSel (env : Env) : CSel → Nat → σ → (σ → Bool) → (σ → Row 
     let off ← match offset with
       | some e => do let i ← limitInt (← eval env e fuel); pure i.toNatClampNeg
       | none => pure 0
-    if dirs.isEmpty && ops.all (· == .unionAll) then
+    -- one core puts its own rows in ORDER BY's order
+    let ord := if cores.size == 1 && !dirs.isEmpty then some (dirs, lim.map (· + off)) else none
+    if (dirs.isEmpty || cores.size == 1) && ops.all (· == .unionAll) then
       -- each core's rows as it makes them, the first `off` counted but not computed
       let take (st : σ × Nat) (row : Unit → EM (Row × Row)) : EM (σ × Nat) := do
         if st.2 < off then return (st.1, st.2 + 1)
@@ -1851,10 +1853,8 @@ def foldSel (env : Env) : CSel → Nat → σ → (σ → Bool) → (σ → Row 
       for core in cores do
         if full st then break
         let core ← hoistCore env core fuel
-        st ← runCore env none none core fuel st full take
+        st ← runCore env none ord core fuel st full take
       return st.1
-    -- one core puts its own rows in ORDER BY's order
-    let ord := if cores.size == 1 && !dirs.isEmpty then some (dirs, lim.map (· + off)) else none
     let mut acc : Array (Row × Row) := #[]
     let mut i := 0
     for core in cores do
@@ -2090,14 +2090,22 @@ def runCore (env : Env) (pre? : Option CoreRun) (ord : Option (Array (Bool × Bo
           | none => return out) #[]
     -- window functions, over all the result rows
     let winCols ← wins.mapM fun w => winColumn envs w fuel
+    let envOf (i : Nat) : Env := { (envs.getD i env) with wins := winCols.map (·.getD i .null) }
+    if !distinct && ord.isNone then
+      -- a result row's columns are computed only when it is output
+      let mut st := init
+      for i in [0:envs.size] do
+        if stop st then break
+        let e := envOf i
+        st ← put st fun _ => do pure (← colsC.mapM (· e), ← orderC.mapM (· e))
+      return st
     let mut out := #[]
     for i in [0:envs.size] do
-      let e := { (envs.getD i env) with wins := winCols.map (·.getD i .null) }
+      let e := envOf i
       let vs ← colsC.mapM (· e)
       let ks ← orderC.mapM (· e)
       out := out.push (vs, ks)
-    let rows := if distinct then firstRows rcolls out else out
-    putAll (match ord with | some (dirs, bound) => orderRows dirs bound rows | none => rows)
+    putAll (match ord with | some (dirs, bound) => orderRows dirs bound (firstRows rcolls out) | none => firstRows rcolls out)
   termination_by _ fuel _ _ _ => fuel
 
 /-- A window function's value for each result row: rows ordered by partition and ORDER BY keys, peers grouped, and the

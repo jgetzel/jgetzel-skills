@@ -512,10 +512,17 @@ def selectReads (q : Select) (name : String) : Bool :=
       | _ => false
     | _ => false
 
+/-- EXISTS asks only whether a row comes: its result columns are never computed (sqlite3CodeSubselect). -/
+def existsOnly : CSel → CSel
+  | .mk ctes cores ops dirs limit offset n =>
+    .mk ctes (cores.map fun c => match c with
+      | .select srcs pre f g gc h _ _ order aggs isAgg d w ws => .select srcs pre f g gc h #[.lit (.int 1)] #[.binary] order aggs isAgg d w ws
+      | c => c) ops dirs limit offset n
+
 /-- A scalar or EXISTS subquery stops at one row: its LIMIT X becomes X <> 0 (as sqlite does), so X is a boolean there. -/
 def oneRow : CSel → CSel
   | .mk ctes cores ops dirs limit offset n =>
-    .mk ctes cores ops dirs (limit.map fun e => .cmp .ne e (.lit (.int 0)) .numeric .binary) offset n
+    .mk ctes cores ops dirs (some ((limit.map fun e => CExpr.cmp .ne e (.lit (.int 0)) .numeric .binary).getD (.lit (.int 1)))) offset n
 
 mutual
 def compileExpr (env : CEnv) : Expr → Nat → CM Typed
@@ -703,7 +710,7 @@ def compileExpr (env : CEnv) : Expr → Nat → CM Typed
     return (.isNull ce neg, .none, none)
   | .exists q neg => do
     let (cq, _, _, _, corr) ← compileSub env q false fuel
-    return (.exists (oneRow cq) neg corr, .none, none)
+    return (.exists (existsOnly (oneRow cq)) neg corr, .none, none)
   | .subquery q => do
     let (cq, _, affs, colls, corr) ← compileSub env q false fuel
     if cq.ncols != 1 then throwC s!"sub-select returns {cq.ncols} columns - expected 1"
