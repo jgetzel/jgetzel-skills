@@ -759,10 +759,10 @@ where
         if stop then acc
         else go (c.next p) (if keep r then acc.push (k, r) else acc) f
 
-/-- The rowids of index entries from `probe` on, while their first `neq` fields equal the probe's and (when given) field
-`neq` stays within `hi`. -/
-def scanIndex (p : Pager) (root : Pgno) (ki : KeyInfo) (probe eqProbe : ByteArray) (neq : Nat)
-    (hi : Option (Value × Bool)) : Array Int64 :=
+/-- The rowids of index entries from the key `probe` on, while their first fields equal `eqv` and (when given) the
+field after them stays within `hi`. -/
+def scanIndex (p : Pager) (root : Pgno) (ki : KeyInfo) (probe eqv : Array Value) (hi : Option (Value × Bool)) :
+    Array Int64 :=
   go (BTree.Cursor.seekKey p ki root probe) #[] (BTree.entryBound p)
 where
   go (c : BTree.Cursor) (acc : Array Int64) : Nat → Array Int64
@@ -771,16 +771,16 @@ where
       match c.key p with
       | none => acc
       | some k =>
-        if neq > 0 && cmpRecords ki k eqProbe != .eq then acc else
+        if !eqv.isEmpty && cmpRecordProbe ki k eqv != .eq then acc else
         let past : Bool := match hi with
           | some (h, incl) =>
-            let v := recordColumn k neq
+            let v := recordColumn k eqv.size
             if v.isNull then false else
-            let o := cmpValues (ki.colls.getD neq .binary) v h
+            let o := cmpValues (ki.colls.getD eqv.size .binary) v h
             o == .gt || (!incl && o == .eq)
           | none => false
         if past then acc else
-        let rid := match recordColumn k (recordArity k - 1) with | .int r => r | _ => 0
+        let rid := match recordLast k with | .int r => r | _ => 0
         go (c.next p) (acc.push rid) f
 
 /-- A transient index on a FROM item: its rows as read whole (a table's (rowid, record) pairs, or a subquery's or WITH
@@ -1516,11 +1516,11 @@ def candidates (e : Env) (src : CSource) (run : SrcRun) (sub : Option (Array Row
             let v := Value.applyCmpAff aff (← x e)
             pure (if v.isNull then none else some (v, incl))
           | none => pure none
-        let eqProbe := encodeRecord eqv
-        let probe := match lov with | some v => encodeRecord (eqv.push v) | none => eqProbe
         -- with no lower bound, NULL entries (which sort first) are skipped by starting after them
-        let probe := if lov.isNone && hiv.isSome then encodeRecord (eqv.push (.int (-9223372036854775808)) |>.pop |>.push (Value.real (-1.0/0.0))) else probe
-        let rids := scanIndex p iroot ki probe eqProbe eqv.size hiv
+        let probe := match lov with
+          | some v => eqv.push v
+          | none => if hiv.isSome then eqv.push (.real (-1.0/0.0)) else eqv
+        let rids := scanIndex p iroot ki probe eqv hiv
         return dec (rids.foldl (fun acc k => acc ++ find k) #[])
       -- with no transient index passed in (a RIGHT JOIN's own pass), the whole table
       | .auto _ => return dec (BTree.foldTable p root #[] fun acc k r => acc.push (k, r))

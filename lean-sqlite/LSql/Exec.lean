@@ -173,9 +173,9 @@ def keyVals (ix : PIdx) (row : Row) : Array Value :=
       | .ok v => v
       | .error _ => .null
 
-/-- The entry of index `ix` for a row (its key values, then the rowid). -/
-def indexKey (ix : PIdx) (row : Row) (rowid : Int64) : ByteArray :=
-  encodeRecord ((keyVals ix row).push (.int rowid))
+/-- The entry of index `ix` for a row: its key values, then the rowid. -/
+def indexVals (ix : PIdx) (row : Row) (rowid : Int64) : Array Value :=
+  (keyVals ix row).push (.int rowid)
 
 /-- The record stored for a table row (the INTEGER PRIMARY KEY's column is NULL: it is the rowid). -/
 def recordOf (t : Table) (row : Row) : ByteArray :=
@@ -204,8 +204,7 @@ def tableRow (t : Table) (rowid : Int64) (rec_ : ByteArray) : Row :=
 def uniqueConflict (p : Pager) (ix : PIdx) (row : Row) (rowid : Int64) : Option Int64 :=
   let vals := keyVals ix row
   if !ix.unique || vals.any (·.isNull) then none else
-  let probe := encodeRecord vals
-  let rids := scanIndex p ix.root ix.keyInfo probe probe vals.size none
+  let rids := scanIndex p ix.root ix.keyInfo vals vals none
   rids.find? (· != rowid)
 
 def uniqueMsg (t : Table) (ix : Index) : String :=
@@ -224,8 +223,13 @@ def tableRowNeed (t : Table) (need : Array Bool) (rowid : Int64) (rec_ : ByteArr
 
 /-- Removes a row (`row`: as stored, at least the slots `indexNeed` marks) and its index entries. -/
 def deleteRowOf (idxs : Array PIdx) (t : Table) (row : Row) (rowid : Int64) (p : Pager) : Pager :=
-  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (indexKey ix row rowid)) p
+  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (indexVals ix row rowid)) p
   BTree.tableDelete p t.root rowid
+
+/-- Whether an UPDATE that keeps the rowid and sets the columns `changed` leaves this index's entry as it is: the index
+reads none of those columns (update.c). -/
+def PIdx.keptBy (ix : PIdx) (changed : Array Bool) : Bool :=
+  !ix.hasExprs && ix.pred.isNone && ix.cols.all (!changed.getD · true)
 
 /-- Removes a row and its index entries (`need`: `indexNeed`). -/
 def deleteRowN (need : Array Bool) (idxs : Array PIdx) (t : Table) (rowid : Int64) (p : Pager) : Pager :=
@@ -310,11 +314,15 @@ def writeRow (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (
       | .ignore => return false
       | .replace => modPager (deleteRowP idxs t rowid)
       | _ => runErr s!"UNIQUE constraint failed: {t.name}.{match t.ipk with | some i => (t.cols.getD i default).name | none => "rowid"}"
+  -- an UPDATE that keeps the rowid leaves the entries of an index on columns it does not set as they are (update.c)
+  let kept (ix : PIdx) : Bool := match old with
+    | some o => oldRowid == some rowid && ix.keptBy o.changed
+    | none => false
   -- UNIQUE indexes (a partial one only among the rows it holds)
   let frame := row.push (.int rowid)
   let holds := idxs.map fun ix => inIndex ix ({ pager := Pager.placeholder } : Env) frame
   for ix in idxs, h in holds do
-    if !ix.unique || !h then continue
+    if !ix.unique || !h || kept ix then continue
     match uniqueConflict (← get).pager ix row (oldRowid.getD rowid) with
     | some other =>
       if other == rowid && oldRowid.isNone then continue
@@ -323,15 +331,23 @@ def writeRow (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)) (
       | .replace => modPager (deleteRowP idxs t other)
       | _ => runErr (uniqueMsg t ix.toIndex)
     | none => pure ()
-  -- the old row goes, then the new one and its index entries
-  if let some o := oldRowid then
-    modPager (match old with | some o' => deleteRowOf idxs t o'.row o | none => deleteRowP idxs t o)
+  -- the old row and its index entries go (but for the entries a kept index has already), then the new row and its
+  -- index entries
+  match oldRowid, old with
+  | some o, some o' =>
+    modPager fun p =>
+      let p := idxs.foldl (fun p ix =>
+        if kept ix then p else BTree.indexDelete p ix.keyInfo ix.root (indexVals ix o'.row o)) p
+      BTree.tableDelete p t.root o
+  | some o, none => modPager (deleteRowP idxs t o)
+  | none, _ => pure ()
   let rec_ := match old with
     | some o => recordOver t row o
     | none => recordOf t row
   modPager fun p =>
     let p := BTree.tableInsert p t.root rowid rec_
-    (idxs.zip holds).foldl (fun p (ix, h) => if h then BTree.indexInsert p ix.keyInfo ix.root (indexKey ix row rowid) else p) p
+    (idxs.zip holds).foldl (fun p (ix, h) =>
+      if h && !kept ix then BTree.indexInsert p ix.keyInfo ix.root (indexVals ix row rowid) else p) p
   return true
 
 /-- sqlite_sequence's value for an AUTOINCREMENT table. -/
@@ -376,18 +392,28 @@ def matching (t : Table) (w : Option Expr) : XS (Array Row) := do
   let rows ← liftR (runSel (← envX) cq fuel0)
   return if t.withoutRowid then rows.map (·.push .null) else rows
 
-/-- The rowids of the rows a WHERE clause selects from a rowid table. -/
+/-- The rowids of the rows a WHERE clause selects from a rowid table, found as sqlite's update.c and delete.c find them:
+the WHERE's conjuncts compiled over the table's row, an access path chosen from them, and the one-table core run; no
+SELECT is built and compiled. -/
 def matchingRowids (t : Table) (w : Option Expr) : XS (Array Int64) := do
-  let qn := "\x00" ++ (if t.temp then "temp" else "main") ++ "\x00" ++ t.name
-  let cols := [ResultCol.expr (.col (some t.name) "rowid" false) none "rowid"]
-  let q : Select := .mk false [] (.select false cols (some (.table qn (some t.name))) [] w [] none) [] [] none none
-  let (cq, _, _) ← compileQ q
-  let rows ← liftR (runSel (← envX) cq fuel0)
-  return rows.filterMap fun r => match r.getD 0 .null with | .int k => some k | _ => none
+  let s ← schemaX
+  let n := t.cols.size
+  let cenv : CEnv := { schema := s, scopes := tableScope t :: (← scopesX) }
+  let (conds, _) ← liftP ((compileList cenv (match w with | some w => conjuncts w 64 | none => []) fuel0).run {})
+  let conds := conds.map (·.1)
+  -- the conditions that read no column are checked once, the others on each row
+  let (pre, onRow) := conds.partition fun c => let (ss, corr) := slotsOf c 64; ss.isEmpty && !corr
+  let src := CSource.table t.root n t.ipk (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) 0
+    (chooseAccess t (s.indexesOfTable t) 0 conds) false false #[] #[]
+  let core := CCore.select #[src] pre #[onRow] #[] #[] none #[.col 0 n] #[.binary] #[] #[] false false (n + 1) #[]
+  let env ← envX
+  let core ← liftR (hoistCore env core fuel0)
+  let rows ← liftR (runCore env none none core none fuel0)
+  return rows.filterMap fun (r, _) => match r.getD 0 .null with | .int k => some k | _ => none
 
 /-! ### WITHOUT ROWID tables: an index-format tree whose records are the key columns, then the rest -/
 
-def worRecord (t : Table) (row : Row) : ByteArray := encodeRecord (t.layout.map (row.getD · .null))
+def worVals (t : Table) (row : Row) : Array Value := t.layout.map (row.getD · .null)
 def worKey (t : Table) (row : Row) : ByteArray := encodeRecord (t.pkCols.map (row.getD · .null))
 def worRowOf (t : Table) (r : ByteArray) : Row := worRow t.cols.size t.layout (t.cols.map (·.aff == .real)) (t.cols.map columnDefault) r
 
@@ -396,19 +422,16 @@ def entryVals (ix : PIdx) (row : Row) (rowid : Int64) : Array Value :=
   if ix.tail.isEmpty then (keyVals ix row).push (.int rowid)
   else keyVals ix row ++ ix.tail.map (row.getD · .null)
 
-def idxEntry (ix : PIdx) (row : Row) (rowid : Int64) : ByteArray :=
-  encodeRecord (entryVals ix row rowid)
-
 /-- The row of a WITHOUT ROWID table with the key of `row`. -/
 def worFind (p : Pager) (t : Table) (row : Row) : Option Row :=
-  let key := worKey t row
+  let key := t.pkCols.map (row.getD · .null)
   match (BTree.Cursor.seekKey p t.pkKeyInfo t.root key).key p with
-  | some r => if cmpRecords t.pkKeyInfo r key == .eq then some (worRowOf t r) else none
+  | some r => if cmpRecordProbe t.pkKeyInfo r key == .eq then some (worRowOf t r) else none
   | none => none
 
 def worDeleteP (idxs : Array PIdx) (t : Table) (row : Row) (p : Pager) : Pager :=
-  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (idxEntry ix row 0)) p
-  BTree.indexDelete p t.pkKeyInfo t.root (worRecord t row)
+  let p := idxs.foldl (fun p ix => BTree.indexDelete p ix.keyInfo ix.root (entryVals ix row 0)) p
+  BTree.indexDelete p t.pkKeyInfo t.root (worVals t row)
 
 def pkMsg (t : Table) : String :=
   "UNIQUE constraint failed: " ++ ", ".intercalate (t.pkCols.toList.map fun c => s!"{t.name}.{(t.cols.getD c default).name}")
@@ -444,11 +467,10 @@ def writeRowWor (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)
     if !ix.unique || !inIndex ix ({ pager := Pager.placeholder } : Env) row then continue
     let vals := keyVals ix row
     if vals.any (·.isNull) then continue
-    let probe := encodeRecord vals
     let p := (← get).pager
-    match (BTree.Cursor.seekKey p ix.keyInfo ix.root probe).key p with
+    match (BTree.Cursor.seekKey p ix.keyInfo ix.root vals).key p with
     | some e =>
-      if cmpRecords { ix.keyInfo with limit := ix.cols.size } e probe == .eq then
+      if cmpRecordProbe { ix.keyInfo with limit := ix.cols.size } e vals == .eq then
         let fs := decodeRecord e
         let orow := ix.cols.size.fold (fun k _ (r : Row) => r.setIfInBounds (ix.cols.getD k 0) (fs.getD k .null))
           (Array.replicate (t.cols.size + 1) .null)
@@ -462,11 +484,10 @@ def writeRowWor (t : Table) (idxs : Array PIdx) (cks : Array (Except String CFn)
           | _ => runErr (uniqueMsg t ix.toIndex)
     | none => pure ()
   if let some o := old then modPager (worDeleteP idxs t o)
-  let rec_ := worRecord t row
   let ins := idxs.filter fun ix => inIndex ix ({ pager := Pager.placeholder } : Env) row
   modPager fun p =>
-    let p := BTree.indexInsert p t.pkKeyInfo t.root rec_
-    ins.foldl (fun p ix => BTree.indexInsert p ix.keyInfo ix.root (idxEntry ix row 0)) p
+    let p := BTree.indexInsert p t.pkKeyInfo t.root (worVals t row)
+    ins.foldl (fun p ix => BTree.indexInsert p ix.keyInfo ix.root (entryVals ix row 0)) p
   return true
 
 /-! ### Triggers -/
@@ -859,7 +880,7 @@ def dropColumn (tn c : String) : XS Unit := do
   let p := (← get).pager
   if t.withoutRowid then
     let j := (t.layout.findIdx? (· == i)).getD 0
-    let recs := BTree.foldIndex p t.root #[] fun acc r => acc.push (encodeRecord ((decodeRecord r).eraseIdxIfInBounds j))
+    let recs := BTree.foldIndex p t.root #[] fun acc r => acc.push ((decodeRecord r).eraseIdxIfInBounds j)
     modPager fun p => recs.foldl (fun p r => BTree.indexInsert p t.pkKeyInfo t.root r) (BTree.clear p t.root)
   else
     let recs := BTree.foldTable p t.root #[] fun acc k r => acc.push (k, encodeRecord ((decodeRecord r).eraseIdxIfInBounds i))

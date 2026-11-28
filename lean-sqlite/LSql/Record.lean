@@ -116,8 +116,12 @@ where
       let (t, k) := getVarint p pos
       if i == 0 then some (t, body) else go hs (pos + k) (body + serialLen t) (i - 1) fuel
 
-/-- The number of columns in a record. -/
-def recordArity (p : ByteArray) : Nat := (recordFields p).size
+/-- The last column of a record (an index entry's rowid). -/
+def recordLast (p : ByteArray) : Value :=
+  match (recordFields p).back? with
+  | some (t, o) => decodeField p o t
+  | none => .null
+
 
 /-- A record of `n` fields: field `i` copied from record `old` (`fields`: its `recordFields`) where `keep i`, serial type
 and body bytes, nothing decoded; else the value `v i`. -/
