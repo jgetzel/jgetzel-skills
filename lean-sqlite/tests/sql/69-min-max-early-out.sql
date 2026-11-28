@@ -66,3 +66,13 @@ SELECT a, max(n) FROM t WHERE c GLOB 'k*';
 SELECT a, max(n) FROM t WHERE c = 'k';
 SELECT a, max(n) FROM t WHERE c BETWEEN 'a' AND 'z';
 SELECT a, max(n) FROM t WHERE a > 'p';
+
+-- a join whose only aggregate is min()/max() of a column its WHERE pins stops after its first row (bare columns are that row's)
+create table jv(c,n); insert into jv values('a',null),('b',null),('c',null),('d',null);
+SELECT a.c, b.c, min(a.n) FROM jv a, jv b WHERE a.n IS NULL;
+SELECT a.c, b.c, min(a.n) FROM jv a LEFT JOIN jv b ON 1 WHERE a.n IS NULL;
+SELECT a.c, b.c, max(b.n) FROM jv a, jv b WHERE b.n IS NULL;
+SELECT a.c, b.c, min(a.n) FROM jv a JOIN jv b ON a.c = b.c WHERE a.n IS NULL;
+SELECT a.c, b.c, min(b.n) FROM jv a LEFT JOIN jv b ON a.c = 'zz' WHERE b.n IS NULL;
+SELECT a.c, min(a.n) FROM jv a, jv b, jv z WHERE a.n IS NULL;
+SELECT count(*), min(a.n) FROM jv a, jv b WHERE a.n IS NULL;

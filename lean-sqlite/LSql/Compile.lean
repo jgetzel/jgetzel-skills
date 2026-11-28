@@ -456,6 +456,25 @@ def pinsCol (s : Nat) (coll : Collation) (c : CExpr) : Bool :=
   | .cmp op e (.col 0 t) _ k => (op == .eq || op == .is) && t == s && const e && k == coll
   | _ => false
 
+/-- A join whose only aggregate is min() or max() of a column some WHERE term pins: the loop stops after its first row, so the
+bare columns are that row's (sqlite3 stops the whole join once the pinned column's order is satisfied). The source holding the
+column is read as `Access.ordered`, which for an aggregate core means the loop stops after one joined row. -/
+def minMaxJoin : CCore → CCore
+  | core@(.select srcs pre filters #[] gc none cols rcs order #[.mk name dist false #[.col 0 s] coll none] true d w #[]) =>
+    if !(name == "MIN" || name == "MAX") || srcs.size < 2 || !(filters.any fun fs => fs.any (pinsCol s coll)) then core else
+    let pick := (List.range srcs.size).find? fun i => match srcs[i]? with
+      | some (CSource.table _ n _ _ _ base (.full) false false _ _) => base ≤ s && s < base + n
+      | _ => false
+    match pick with
+    | some i =>
+      match srcs[i]? with
+      | some (CSource.table root n ipk rc dv base acc l r lay on) =>
+        .select (srcs.setIfInBounds i (CSource.table root n ipk rc dv base (.ordered false acc) l r lay on)) pre filters #[] gc none cols rcs order
+          #[.mk name dist false #[.col 0 s] coll none] true d w #[]
+      | _ => core
+    | none => core
+  | core => core
+
 /-- sqlite's min()/max() optimization (select.c minMaxQuery, where.c WHERE_ORDERBY_MIN/MAX): the only aggregate of a
 one-table core with no GROUP BY, HAVING or FILTER is min() or max() of a column, an ORDER BY the loop may satisfy, and
 the loop stops after its first row. The loop satisfies it when a WHERE term pins the column, or its access path gives
@@ -776,7 +795,7 @@ def compileSelect (env : CEnv) : Select → Nat → CM (CSel × Array String × 
       cores := cores.map fun c => match c with
         | .select srcs pre f g gc h cols rc _ aggs isAgg d w ws => .select srcs pre f g gc h cols rc (ks.map (cols.getD · default)) aggs isAgg d w ws
         | .values rows _ => .values rows ks
-    cores := cores.map (minMaxCore env.schema)
+    cores := cores.map (minMaxJoin ∘ minMaxCore env.schema)
     let dirs := orderBy.toArray.map fun (t : OrderTerm) => dirOf t names colls
     -- a plain column's collation for ORDER BY in a simple select
     let dirs := if single then dirs.mapIdx fun i d =>
